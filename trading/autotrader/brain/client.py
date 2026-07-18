@@ -1,0 +1,129 @@
+"""LLM 브레인 CLI 클라이언트 (claude / codex).
+
+유일하게 비결정적인 구성요소. 절대규칙 3: 출력은 반드시
+validate_brain_output(스키마 검증) → 리스크/컴플라이언스 게이트를 거친다.
+검증 실패 시 ok=False — 호출측은 아무 주문도 내지 않고 이전 상태 유지.
+재시도 없음(단순성 우선).
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Sequence
+
+from autotrader.brain.schema import ValidationResult, validate_brain_output
+from autotrader.gates.types import Portfolio
+from autotrader.screener.ranking import RankedSymbol
+
+# codex는 ~/.codex/AGENTS.md의 스킬 선택 규칙 때문에 비대화형 실행에서도
+# 스킬 메뉴를 반환할 때가 있다(프롬프트로 막아도 재발). --output-schema로
+# 응답 형태를 강제하면 구조적으로 차단된다.
+_CODEX_SCHEMA = Path(__file__).with_name("codex_output_schema.json")
+
+CLI_COMMANDS = {
+    "claude": ["claude", "-p"],   # 프롬프트는 마지막 인자
+    "codex": ["codex", "exec", "--output-schema", str(_CODEX_SCHEMA)],
+}
+CLI_TIMEOUT_SEC = 300
+
+
+@dataclass(frozen=True)
+class Candidate:
+    ranked: RankedSymbol
+    last_close: int  # 최근 종가 (원)
+
+
+def build_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str:
+    held_lines = (
+        "\n".join(
+            f"- {sym}: {p.qty}주, 평가액 {p.value_krw:,}원"
+            for sym, p in sorted(pf.positions.items())
+        )
+        or "- 없음"
+    )
+    cand_lines = "\n".join(
+        f"- {c.ranked.symbol}: 종가 {c.last_close:,}원, "
+        f"20일수익률 {c.ranked.ret20:+.1%}, 60일수익률 {c.ranked.ret60:+.1%}, "
+        f"20일변동성 {c.ranked.vol20:.1%}"
+        for c in candidates
+    )
+    return f"""당신은 한국 주식 스윙 트레이딩(며칠~몇 주 보유) 판단 모듈이다.
+아래 후보 중 진입할 종목과 보유 종목 중 청산할 종목을 판단하라.
+
+[후보 종목]
+{cand_lines}
+
+[현재 보유]
+{held_lines}
+
+[계좌] 총평가 {pf.equity_krw:,}원, 현금 {pf.cash_krw:,}원
+
+규칙:
+- 확신 없으면 skip. 진입 강요 없음.
+- enter 시 entry_price/stop_price/target_price는 양의 정수(원), 0 < stop < entry < target.
+- horizon_days는 1~30 정수. reason은 500자 이내.
+- 후보에 없는 종목 진입 금지, 보유하지 않은 종목 청산 금지.
+- 포지션 크기는 시스템이 정하므로 출력하지 마라.
+
+아래 JSON 형식으로만 응답하라. JSON 외 텍스트 금지:
+{{"decisions": [{{"symbol": "6자리코드", "action": "enter|skip", "entry_price": 정수, "stop_price": 정수, "target_price": 정수, "horizon_days": 정수, "reason": "근거"}}], "exits": [{{"symbol": "6자리코드", "reason": "근거"}}]}}
+skip이면 가격/기간 필드는 null 또는 생략."""
+
+
+def extract_json(text: str) -> str:
+    """응답에서 JSON 부분만 결정적으로 추출 (코드펜스/잡담 제거)."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return text
+    return text[start : end + 1]
+
+
+def _run_cli(brain: str, prompt: str) -> str:
+    argv = CLI_COMMANDS[brain]
+    exe = shutil.which(argv[0])  # Windows에서 PATHEXT 적용 (codex.cmd 등)
+    if exe is None:
+        raise RuntimeError(f"{brain} CLI not found on PATH")
+    proc = subprocess.run(
+        [exe] + argv[1:] + [prompt], capture_output=True, text=True,
+        encoding="utf-8", errors="replace",  # Windows cp949 디코딩 오류 방지
+        timeout=CLI_TIMEOUT_SEC, stdin=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        detail = " | ".join(
+            x for x in (proc.stderr.strip(), proc.stdout.strip()) if x
+        )[:500]
+        raise RuntimeError(f"{brain} CLI failed (rc={proc.returncode}): {detail}")
+    return proc.stdout
+
+
+def ask_text(
+    prompt: str,
+    brain: str = "claude",
+    runner: Callable[[str, str], str] = _run_cli,
+) -> str:
+    """자유 텍스트 호출 (사후분석 전용 — 주문 경로 아님, 스키마 검증 불필요)."""
+    if brain not in CLI_COMMANDS:
+        raise ValueError(f"unknown brain: {brain!r}")
+    return runner(brain, prompt)
+
+
+def ask_brain(
+    candidates: Sequence[Candidate],
+    pf: Portfolio,
+    brain: str = "claude",
+    runner: Callable[[str, str], str] = _run_cli,  # 테스트에서 모킹
+) -> ValidationResult:
+    if brain not in CLI_COMMANDS:
+        return ValidationResult(False, (f"unknown brain: {brain!r}",), None)
+    prompt = build_prompt(candidates, pf)
+    try:
+        raw = runner(brain, prompt)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        return ValidationResult(False, (f"CLI error: {e}",), None)
+    return validate_brain_output(
+        extract_json(raw),
+        candidate_symbols={c.ranked.symbol for c in candidates},
+        held_symbols=set(pf.positions.keys()),
+    )

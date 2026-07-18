@@ -7,3 +7,9 @@ preview.html
 releases/
 .env
 *.bak.*
+# trading engine (절대규칙 4)
+trading/state/
+trading/.env
+__pycache__/
+.pytest_cache/
+*.pyc

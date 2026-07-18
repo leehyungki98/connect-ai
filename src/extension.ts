@@ -7574,6 +7574,24 @@ OS 차이: 백그라운드 프로세스는 맥/리눅스에선 \`nohup ... &\`, 
 // On any conflict / auth failure, surface a friendly message
 // and let the user resolve it via the manual sync menu.
 // ============================================================
+/* ── 절대규칙 4: 트레이딩 크레덴셜 push 방지 가드 ─────────────────────
+   자동 git 동기화가 스테이징한 파일에 트레이딩 비밀/상태가 섞여 있으면
+   커밋·푸시 전에 스테이징을 전부 해제하고 동기화를 중단한다. 100% 결정적. */
+const _TRADING_SECRET_PATTERNS = [
+    /(^|\/)\.env(\..*)?$/i,      // .env, .env.local 등
+    /(^|\/)trading\//i,           // 트레이딩 엔진 폴더 전체
+    /appkey|appsecret/i,          // KIS 키 파일명 패턴
+];
+function _abortSyncIfSecretsStaged(dir: string, notify: (m: string, d?: number) => void): boolean {
+    const staged = gitExecSafe(['diff', '--cached', '--name-only'], dir) || '';
+    const hit = staged.split('\n').map(s => s.trim()).filter(Boolean)
+        .find(f => _TRADING_SECRET_PATTERNS.some(re => re.test(f)));
+    if (!hit) return false;
+    gitExecSafe(['reset'], dir); // 스테이징 전체 해제 — 아무것도 커밋되지 않음
+    notify(`🛑 **[GitHub Sync 중단]** 트레이딩 비밀/상태 파일(${hit})이 감지되어 자동 동기화를 차단했습니다. (절대규칙 4)`);
+    return true;
+}
+
 async function _safeGitAutoSync(brainDir: string, commitMsg: string, provider: any = null) {
     if (_autoSyncRunning) return; // dedup: another auto-sync (or manual sync) is already running
     _autoSyncRunning = true;
@@ -7614,6 +7632,7 @@ async function _safeGitAutoSync(brainDir: string, commitMsg: string, provider: a
 
         // Stage + commit any new local work. "nothing to commit" is fine.
         gitExecSafe(['add', '.'], brainDir);
+        if (_abortSyncIfSecretsStaged(brainDir, notify)) return;
         gitExecSafe(['commit', '-m', commitMsg], brainDir);
 
         // No remote configured → try to pull from settings, otherwise stay local.
@@ -7720,6 +7739,7 @@ async function _safeGitAutoSyncCompany(commitMsg: string, provider: any = null) 
         ensureBrainGitignore(companyDir); // same boilerplate ignore is fine here
         ensureInitialCommit(companyDir);
         gitExecSafe(['add', '.'], companyDir);
+        if (_abortSyncIfSecretsStaged(companyDir, notify)) return;
         gitExecSafe(['commit', '-m', commitMsg], companyDir);
         const existingRemote = gitExecSafe(['remote', 'get-url', 'origin'], companyDir)?.trim() || '';
         if (!existingRemote) {
@@ -14248,6 +14268,9 @@ function showBubbleOn(agentId, text, ms){
 
 /* ==== Auto-walking + idle chat ==== */
 let autoWalkActive = false;
+/* v2.89.158 — 여러 명이 동시에 움직이므로, 이미 이동 중인 에이전트를
+   다른 액션이 또 집어가지 않도록 점유 표시. 해제는 항상 finally 에서. */
+const busyAgents = new Set();
 const IDLE_CHATS = [
   '커피 한잔?', '오늘 진도 어때?', '아 그거 봤어?', '점심 뭐 먹지', '와 대박',
   '확인해볼게', '체크', '오케이', '굿', '음...', '잠깐만', '나중에 얘기하자'
@@ -14558,6 +14581,7 @@ async function idleChatStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length < 2) return;
@@ -14572,17 +14596,22 @@ async function idleChatStep(){
   const aHomeY = parseFloat(deskEls[A.id].dataset.homeY);
   const ax = bx + (aHomeX > bx ? 7 : -7);
   const ay = by + (aHomeY > by ? 5 : -5);
-  showStatusIcon(A.id, '💬', 4500);
-  await walkToward(A.id, ax, ay, 1100);
-  showBubbleOn(A.id, pickRandom(IDLE_CHATS), 1800);
-  logActivity(A.emoji, A.id, '<strong>'+A.name+'</strong> → '+B.emoji+' '+B.name+' (잡담)');
-  await new Promise(r => setTimeout(r, 1400));
-  if (Math.random() < 0.7) {
-    showStatusIcon(B.id, '💬', 2500);
-    showBubbleOn(B.id, pickRandom(IDLE_CHATS), 1800);
+  busyAgents.add(A.id);
+  try {
+    showStatusIcon(A.id, '💬', 4500);
+    await walkToward(A.id, ax, ay, 1100);
+    showBubbleOn(A.id, pickRandom(IDLE_CHATS), 1800);
+    logActivity(A.emoji, A.id, '<strong>'+A.name+'</strong> → '+B.emoji+' '+B.name+' (잡담)');
     await new Promise(r => setTimeout(r, 1400));
+    if (Math.random() < 0.7) {
+      showStatusIcon(B.id, '💬', 2500);
+      showBubbleOn(B.id, pickRandom(IDLE_CHATS), 1800);
+      await new Promise(r => setTimeout(r, 1400));
+    }
+    await walkToward(A.id, aHomeX, aHomeY, 1100);
+  } finally {
+    busyAgents.delete(A.id);
   }
-  await walkToward(A.id, aHomeX, aHomeY, 1100);
 }
 
 /* Visit a location, idle there, return — Smallville routine */
@@ -14590,6 +14619,7 @@ async function visitLocationStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length === 0) return;
@@ -14601,15 +14631,21 @@ async function visitLocationStep(){
   const aHomeY = parseFloat(deskEls[A.id].dataset.homeY);
   /* offset so multiple agents at same location don't perfectly overlap */
   const offX = (Math.random() - 0.5) * 5;
-  showStatusIcon(A.id, loc.emoji, loc.stay + 2400);
-  logActivity(loc.emoji, A.id, '<strong>'+A.name+'</strong> → '+loc.label);
-  /* mark location active */
+  busyAgents.add(A.id);
   const locEl = document.querySelector('[data-loc="'+locId+'"]');
-  if (locEl) locEl.classList.add('active');
-  await walkToward(A.id, loc.x + offX, loc.y, 1300);
-  await new Promise(r => setTimeout(r, loc.stay));
-  if (locEl) locEl.classList.remove('active');
-  await walkToward(A.id, aHomeX, aHomeY, 1300);
+  try {
+    showStatusIcon(A.id, loc.emoji, loc.stay + 2400);
+    logActivity(loc.emoji, A.id, '<strong>'+A.name+'</strong> → '+loc.label);
+    /* mark location active */
+    if (locEl) locEl.classList.add('active');
+    await walkToward(A.id, loc.x + offX, loc.y, 1300);
+    await new Promise(r => setTimeout(r, loc.stay));
+    if (locEl) locEl.classList.remove('active');
+    await walkToward(A.id, aHomeX, aHomeY, 1300);
+  } finally {
+    if (locEl) locEl.classList.remove('active');
+    busyAgents.delete(A.id);
+  }
 }
 
 /* Think alone at desk — generate a personality thought */
@@ -14617,6 +14653,7 @@ async function thinkStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length === 0) return;
@@ -14639,14 +14676,26 @@ function startAutoWalk(){
   if (autoWalkActive) return;
   autoWalkActive = true;
   logActivity('🚶','ceo','자율 모드 ON — 에이전트들이 일과를 시작합니다.');
-  const tick = async () => {
+  /* v2.89.158 — 예전엔 14~32초에 딱 한 명만 움직여서 대부분의 시간엔
+     전원이 정지해 보였다. 이제 매 틱마다 1~3명이 "동시에" 각자 행동한다.
+     await 하지 않고 띄우는 게 핵심 — 액션 길이(잡담 ~5s, 장소방문 ~9s)가
+     서로 달라서 await 하면 제일 느린 놈이 전체 리듬을 잡아먹는다.
+     busyAgents 가 같은 에이전트 중복 선택을 막아준다. */
+  const tick = () => {
     if (!autoWalkActive) return;
-    try { await autonomousAct(); } catch {}
-    /* 14~32초 사이 랜덤 간격 — 더 활발하게 */
-    const next = 14000 + Math.floor(Math.random() * 18000);
+    const actors = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < actors; i++) {
+      /* 동시 출발이 아니라 0~1.2초 흩어서 — 로봇처럼 각 잡혀 보이지 않게 */
+      setTimeout(() => {
+        if (!autoWalkActive) return;
+        autonomousAct().catch(() => {});
+      }, Math.floor(Math.random() * 1200));
+    }
+    /* 4~9초 간격 — 항상 누군가는 움직이는 상태 유지 */
+    const next = 4000 + Math.floor(Math.random() * 5000);
     setTimeout(tick, next);
   };
-  setTimeout(tick, 6000);
+  setTimeout(tick, 1500);
 }
 function stopAutoWalk(){
   autoWalkActive = false;
@@ -15004,15 +15053,18 @@ function applyWorkdayState(on, opts){
       ? '🟢 ON — 1인 기업 에이전트들이 15분마다 미션을 향해 자동으로 한 스텝씩 일합니다. 자리 비워도, 일반 채팅 모드여도 계속 일해요. 클릭하면 끔.'
       : '⚫ OFF — 자동 사이클 중단. 사용자가 직접 명령할 때만 동작. 클릭하면 다시 켬.';
   }
+  /* v2.89.158 — 걷기/잡담 애니메이션은 이 토글에서 분리했다. 이건 순수 연출이라
+     토큰을 한 푼도 안 쓰는데, 토큰을 쓰는 24시간 자동 사이클과 한 스위치에
+     묶여 있어서 "사무실을 열었는데 아무도 안 움직인다"가 기본 상태였다.
+     이제 걷기는 officeInit 에서 항상 시작하고, 이 토글은 실제로 LLM 을 굴리는
+     자동 사이클(chatter)만 제어한다. */
   if (_workdayOn) {
-    try { startAutoWalk(); } catch {}
     startChatterAutofire();
     /* Click-to-enable should give instant feedback; first-time init shouldn't. */
     if (opts && opts.fireImmediate) {
       try { vscode.postMessage({ type: 'runChatter' }); } catch {}
     }
   } else {
-    try { stopAutoWalk(); } catch {}
     stopChatterAutofire();
   }
 }
@@ -15331,6 +15383,8 @@ window.addEventListener('message', e => {
          Fallback to 'true' only when the host genuinely didn't send a value. */
       const initialWorkdayOn = (typeof m.workdayOn === 'boolean') ? m.workdayOn : true;
       applyWorkdayState(initialWorkdayOn, { fireImmediate: false });
+      /* 걷기는 토글과 무관하게 항상 ON — 사무실을 연 순간부터 살아 있어야 한다. */
+      try { startAutoWalk(); } catch {}
       setTimeout(() => { agents.forEach(a => { showStatusIcon(a.id, '☕', 2500); }); }, 1200);
       logActivity('🏢','ceo','사무실 가동. 에이전트 '+agents.length+'명 자리 잡음.');
       logActivity('🌅','ceo','오늘 하루 시작.');
