@@ -4378,9 +4378,10 @@ function renderAgentBoard(agents,companyDir){
       if (LOCKED_AGENTS[a.id] && !isAgentHired(a.id)) {
         openHirePin(a);
       } else if (OPTIONAL_AGENTS.has(a.id) && !isAgentActive(a.id)) {
-        if (confirm(`${a.emoji} ${a.name}\n\n이 에이전트를 활성화할까요?\nCEO가 작업 분배 시 호출할 수 있습니다.\n언제든 다시 비활성화 가능.`)) {
-          vscode.postMessage({ type:'setAgentActive', agent: a.id, active: true });
-        }
+        /* 웹뷰 샌드박스에는 allow-modals가 없어서 confirm()이 항상 false를
+           반환한다 — 확인창을 거치면 활성화가 영영 실행되지 않는다. 카드에
+           ⏸ 로 비활성 상태가 이미 표시되고 되돌리기도 쉬우므로 바로 실행. */
+        vscode.postMessage({ type:'setAgentActive', agent: a.id, active: true });
       } else {
         showAgentPanel(a);
       }

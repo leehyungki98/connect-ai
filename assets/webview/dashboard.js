@@ -1095,8 +1095,18 @@ function showAgentDetailModal(a){
   /* v2.89.107 — 비활성화 버튼 (OPTIONAL 에이전트만 노출) */
   const deactBtn = bd.querySelector('[data-act="deactivate"]');
   if (deactBtn) {
+    /* 웹뷰 샌드박스에는 allow-modals가 없어서 confirm()이 항상 false다.
+       네이티브 모달 대신 버튼 자체를 2단계 확인으로 쓴다. */
+    let armed = false;
+    let armTimer = 0;
     deactBtn.addEventListener('click', () => {
-      if (!confirm(`${a.name||a.id} 를 비활성화할까요?\n언제든 다시 활성화할 수 있습니다.`)) return;
+      if (!armed) {
+        armed = true;
+        deactBtn.textContent = '⏸ 한 번 더 누르면 비활성화';
+        armTimer = setTimeout(() => { armed = false; deactBtn.textContent = '⏸ 비활성화'; }, 4000);
+        return;
+      }
+      clearTimeout(armTimer);
       try { vscode.postMessage({ type:'setAgentActive', agent: a.id, active: false }); } catch {}
       close();
     });
