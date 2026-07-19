@@ -264,6 +264,11 @@ function render(s) {
       const photoHtml = a.profileImageUri
         ? '<div class="agent-photo" style="background-image:url(\'' + esc(a.profileImageUri) + '\')"></div>'
         : '<div class="agent-photo no-photo">' + esc(a.emoji) + '</div>';
+      /* 사진 위 임무 칩 — 초상화가 콘텐츠 시절 그림이라 사진만으론 트레이딩
+         역할을 알 수 없다. 활성 카드에만 (잠김/비활성은 정체를 가리는 게 의도). */
+      const missionChip = a.mission
+        ? '<div class="agent-mission-chip">' + esc(a.mission) + '</div>'
+        : '';
       const taskBadge = (a.openTasks > 0)
         ? '<div class="agent-task-badge" title="' + a.openTasks + '건 진행 중">' + a.openTasks + '</div>'
         : '';
@@ -306,6 +311,7 @@ function render(s) {
         +   photoHtml
         +   '<div class="agent-overlay"></div>'
         +   activeDot
+        +   missionChip
         +   taskBadge
         +   tooltip
         +   '<div class="agent-name-strip">'
@@ -1019,9 +1025,12 @@ function showAgentDetailModal(a){
   bd.className = 'adm-backdrop';
   bd.style.setProperty('--ag', a.color || '#FBBF24');
   bd.style.setProperty('--ag-glow', (a.color||'#FBBF24')+'33');
+  /* 사진 위 역할 배지 — 초상화가 콘텐츠 시절 그림이어도 사진 영역만 보고
+     트레이딩 역할을 알 수 있게 이미지 위에 직접 얹는다. */
+  const heroCap = a.role ? '<div class="adm-hero-cap">'+esc(a.role)+'</div>' : '';
   const hero = a.profileImageUri
-    ? '<div class="adm-hero" style="background-image:url(\''+esc(a.profileImageUri)+'\')"></div>'
-    : '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">'+esc(a.emoji)+'</div></div>';
+    ? '<div class="adm-hero" style="background-image:url(\''+esc(a.profileImageUri)+'\')">'+heroCap+'</div>'
+    : '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">'+esc(a.emoji)+'</div>'+heroCap+'</div>';
   const skillsActive = (a.skills||[]).filter(s => s.enabled && !s.locked).length;
   const stats = ''
     + '<div class="adm-stat"><div class="adm-stat-icon">📚</div><div class="adm-stat-num">'+(a.verifiedCount||0)+'</div></div>'
@@ -1255,6 +1264,7 @@ function _renderRevMiniSpark(byDay, primaryCur) {
 function _renderRevenueMini(data) {
   const card = document.getElementById('revenueCard');
   if (!card) return;
+  if (card.dataset.trading) return; // 트레이딩 커맨드 센터 — 게이트 상태 유지 (PayPal 덮어쓰기 방지)
   if (data?.error) {
     document.getElementById('revSubtitle').textContent = '⚠️ ' + (data.error || '연결 확인 필요');
     return;

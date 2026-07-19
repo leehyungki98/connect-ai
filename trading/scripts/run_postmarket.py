@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from autotrader.config import STATE_DIR
 from autotrader.kis.client import KISPaperClient
 from autotrader.review import run_postmarket
+from autotrader.status import write_gate_status
 from smoke_kis import load_env
 
 
@@ -29,6 +30,7 @@ def main():
     s = run_postmarket(
         kis, STATE_DIR, date.today(), brain=args.brain, llm_review=args.review
     )
+    write_gate_status(STATE_DIR, date.today(), s["equity_krw"])  # 게이트 상태판 갱신
     ret = s["daily_return_bp"]
     print(f"[postmarket] 총평가 {s['equity_krw']:,}원, 현금 {s['cash_krw']:,}원, "
           f"보유 {s['n_positions']}종목")

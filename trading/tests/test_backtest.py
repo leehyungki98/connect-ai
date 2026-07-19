@@ -72,6 +72,26 @@ def test_stop_limits_loss_on_falling_knife():
     assert r.equity_curve[-1] > CASH * 0.95
 
 
+# --- 트레이드 로그 (실패 패턴 재료) ---
+
+def test_trade_log_recorded():
+    data = make_data({"000010": bars_from_closes(uptrend(daily=0.008))})
+    r = run_backtest(data, CASH)
+    assert len(r.trade_log) >= r.trades >= 1
+    assert {t.exit_kind for t in r.trade_log} <= {"stop", "target", "time"}
+    tr = r.trade_log[0]
+    assert tr.qty > 0 and tr.bars_held > 0 and tr.entry_date < tr.exit_date
+
+
+def test_stop_trades_logged_with_loss():
+    up = uptrend(70, daily=0.006)
+    knife = [round(up[-1] * 0.85 * 0.98**i) for i in range(30)]
+    data = make_data({"000010": bars_from_closes(up + knife)})
+    r = run_backtest(data, CASH)
+    stops = [t for t in r.trade_log if t.exit_kind == "stop"]
+    assert stops and all(t.pnl_krw < 0 for t in stops)  # 손절 기록 + 순손실 부호
+
+
 # --- 룩어헤드 금지 ---
 
 def test_no_lookahead_last_day_jump_not_traded():
@@ -80,6 +100,58 @@ def test_no_lookahead_last_day_jump_not_traded():
     data = make_data({"000010": bars_from_closes(closes)})
     r = run_backtest(data, CASH)
     assert r.trades == 0 and len([e for e in r.equity_curve if e != CASH]) == 0
+
+
+# --- 개선 파라미터 P1/P2/P3 (기본값 OFF — 기존 동작 불변) ---
+
+def whipsaw(n_up=70, drop=0.12, recover=30):
+    """상승 자격 획득 → 급락(-12%, 손절 트리거) → 재상승 (재진입 유혹)."""
+    c = uptrend(n_up, daily=0.006)
+    c.append(round(c[-1] * (1 - drop)))
+    base = c[-1]
+    c += [round(base * 1.006 ** i) for i in range(1, recover + 1)]
+    return c
+
+
+def test_p2_cooldown_blocks_reentry():
+    data = make_data({"000010": bars_from_closes(whipsaw())})
+    no_cd = run_backtest(data, CASH)
+    with_cd = run_backtest(data, CASH, BaselineParams(cooldown_bars=50))
+    n_no = len([t for t in no_cd.trade_log if t.symbol == "000010"])
+    n_cd = len([t for t in with_cd.trade_log if t.symbol == "000010"])
+    assert n_no >= 2      # 쿨다운 없으면 손절 후 재진입
+    assert n_cd == 1      # 쿨다운이면 1회로 끝
+
+
+def test_p1_stop_price_scales_with_vol():
+    from autotrader.backtest import _stop_price
+    p = BaselineParams(stop_vol_k=2.0)
+    assert _stop_price(10_000, 0.03, p) == 9_400   # 2×3% = 6%
+    assert _stop_price(10_000, 0.005, p) == 9_800  # 하한 2% 클램프
+    assert _stop_price(10_000, 0.08, p) == 9_000   # 상한 10% 클램프
+    assert _stop_price(10_000, 0.03, BaselineParams()) == 9_500  # 기본 고정 -5%
+
+
+def test_p3_market_breadth_filter_blocks_entries():
+    # 유니버스 대부분이 이평 이하(flat) → 폭 6% < 40% → 신규 진입 전면 중단
+    data = make_data({"000010": bars_from_closes(uptrend(daily=0.008))}, )
+    off = run_backtest(data, CASH)
+    on = run_backtest(data, CASH, BaselineParams(market_breadth_min=0.4))
+    assert off.trades >= 1
+    assert on.trades == 0 and on.equity_curve[-1] == CASH
+
+
+def test_p3_max_new_per_day_cap():
+    import collections
+    extra = {
+        f"00{i:03d}0": bars_from_closes(uptrend(start=10_000 + i * 500, daily=0.005 + i * 0.0003))
+        for i in range(12)
+    }
+    r = run_backtest(make_data(extra), CASH,
+                     BaselineParams(top_n=12, max_new_per_day=2))
+    per_day = collections.Counter(t.entry_date for t in r.trade_log)
+    assert r.trades >= 1
+    assert max(per_day.values()) <= 2
 
 
 # --- 게이트 준수 ---

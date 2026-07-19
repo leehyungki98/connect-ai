@@ -68,6 +68,7 @@ def main():
     report = run_premarket(
         kis, guard, store, universe, date.today(),
         STATE_DIR / "day_start.json",
+        STATE_DIR / "cooldowns.json",
         proposer_brain=args.proposer, judge_brain=args.judge,
     )
 

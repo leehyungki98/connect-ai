@@ -3,8 +3,8 @@
 .secondbrain/**
 .git/**
 .github/**
-.env
-.env.*
+**/.env
+**/.env.*
 ARCHITECTURE.md
 src/**
 # v2.89.84 — extension_download_site/ 와 releases/ 디렉토리 삭제됨.

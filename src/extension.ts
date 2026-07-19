@@ -6670,6 +6670,13 @@ _레벨을 어떻게 골라야 할지 모르겠다면 \`2 (Draft)\`가 안전한
 function _seedAgentToolsIfMissing(agentId: string) {
   try {
     if (agentId === 'youtube') {
+      /* 2026-07-19 — 레오는 선정자(트레이딩)로 재편됨. 트레이딩 도구를 시드하고
+         콘텐츠 시절 유튜브 도구는 더 이상 새로 심지 않는다 (기존 설치에 남아
+         있는 파일은 HIDDEN_TOOLS_BY_AGENT 로 숨김 — 사용자 파일은 지우지 않음). */
+      const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
+      fs.mkdirSync(toolsDir, { recursive: true });
+      _seedSelectorTradingTools(toolsDir);
+    } else if (agentId === 'youtube__legacy_content') {
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
       _seedYouTubeAccount(toolsDir);
@@ -6690,6 +6697,7 @@ function _seedAgentToolsIfMissing(agentId: string) {
          remain), but listAgentTools hides it whenever the OAuth tool is
          present so they only see ONE calendar entry. */
       _seedSecretaryGoogleCalendarWrite(toolsDir);
+      _seedSecretaryTradingSmoke(toolsDir);
     } else if (agentId === 'editor') {
       /* v2.89.68 — 사운드/음악 에이전트 도구. ACE-Step 1.5 로컬 음악 생성 모델 사용. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
@@ -6701,16 +6709,15 @@ function _seedAgentToolsIfMissing(agentId: string) {
       /* v2.89.112+122 — 코다리 도구. 웹·모바일 셋업 + PWA + dev server + 키트 적용. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
-      _seedDeveloperWebInit(toolsDir);
-      _seedDeveloperWebPreview(toolsDir);
-      _seedDeveloperPwaSetup(toolsDir);
       _seedDeveloperPackApply(toolsDir);
       _seedDeveloperLintTest(toolsDir);
+      _seedDeveloperTradingTests(toolsDir);
     } else if (agentId === 'business') {
-      /* v2.89.121 — 비즈니스 에이전트 도구. PayPal 매출 자동 분석. */
+      /* 2026-07-19 — 현빈은 사후분석으로 재편됨. PayPal 매출 도구는 더 이상
+         시드하지 않고 (트레이딩 조직에 매출 개념이 없음) 사후분석 도구를 심는다. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
-      _seedBusinessPaypalRevenue(toolsDir);
+      _seedAnalystTradingTools(toolsDir);
     }
   } catch { /* ignore */ }
 }
@@ -6973,6 +6980,150 @@ function _seedEditorMusicToVideo(toolsDir: string) {
   _seedFileForceUpgrade(path.join(toolsDir, 'music_to_video.py'), py, 'music_v3');
   _seedFile(path.join(toolsDir, 'music_to_video.json'), json);
   _seedFileForceUpgrade(path.join(toolsDir, 'music_to_video.md'), md, 'music_v3');
+}
+
+/* ── 2026-07-19 — 트레이딩 도구 시드 ────────────────────────────────
+   각 도구는 trading/ 의 결정적 스크립트를 그대로 실행하는 얇은 래퍼다.
+   래퍼는 아무 판단도 하지 않는다 (판단은 브레인, 차단은 게이트).
+   TRADING_DIR 은 시드 시점에 확장이 해석한 실제 경로를 기본값으로 넣고,
+   사용자가 도구 설정 폼에서 언제든 바꿀 수 있다. */
+const TRADING_TOOL_SENTINEL = 'trading_tool_v1';
+
+function _tradingToolPy(name: string, title: string, argv: string[]): string {
+  return `#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""${title} — Connect AI 트레이딩 도구 래퍼 (${TRADING_TOOL_SENTINEL})
+
+모의투자 전용. 이 래퍼는 판단하지 않고 trading/ 의 스크립트를 그대로
+실행해 출력을 그대로 보여준다. 안전층(킬스위치·일일한도·리스크 게이트)은
+스크립트 내부의 결정적 코드가 담당한다.
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CONFIG = HERE / "${name}.json"
+ARGV = ${JSON.stringify(argv)}
+
+
+def _cfg(key):
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8")).get(key, "")
+    except Exception:
+        return ""
+
+
+def trading_root():
+    for src in (os.environ.get("CONNECT_AI_TRADING_DIR"), _cfg("TRADING_DIR")):
+        if src and (Path(src) / "autotrader").is_dir():
+            return Path(src)
+    return None
+
+
+def main():
+    root = trading_root()
+    if root is None:
+        print("[X] trading 폴더를 찾지 못했습니다.")
+        print("    이 도구의 설정에서 TRADING_DIR 에 trading 폴더 경로를 넣어주세요.")
+        print("    (autotrader/ 하위 폴더가 있는 그 폴더입니다)")
+        return 2
+
+    argv = list(ARGV)
+    if argv and argv[0].endswith(".py"):
+        script = root / argv[0]
+        if not script.exists():
+            print("[X] 스크립트가 없습니다: " + str(script))
+            return 2
+        argv[0] = str(script)
+
+    cmd = [sys.executable] + argv
+    print("[>] " + " ".join(cmd))
+    print("[>] cwd = " + str(root))
+    print("-" * 60)
+    return subprocess.call(cmd, cwd=str(root))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`;
+}
+
+function _seedTradingTool(
+  toolsDir: string,
+  name: string,
+  title: string,
+  argv: string[],
+  mdBody: string,
+) {
+  const py = _tradingToolPy(name, title, argv);
+  const json = JSON.stringify({
+    TRADING_DIR: _resolveTradingRoot() || '',
+    _schema: {
+      TRADING_DIR: {
+        type: 'text',
+        label: '📁 trading 폴더 경로',
+        hint: 'autotrader/ 가 들어있는 폴더. 비우면 CONNECT_AI_TRADING_DIR 환경변수를 씁니다.',
+      },
+    },
+  }, null, 2);
+  const md = `# ${title}\n\n${mdBody}\n`;
+  _seedFileForceUpgrade(path.join(toolsDir, `${name}.py`), py, TRADING_TOOL_SENTINEL);
+  _mergeSchemaIntoJson(path.join(toolsDir, `${name}.json`), json);
+  _seedFileForceUpgrade(path.join(toolsDir, `${name}.md`), md, TRADING_TOOL_SENTINEL);
+}
+
+/** 레오(선정자) — 후보 선정·백테스트·개선 카드 생성 */
+function _seedSelectorTradingTools(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'premarket_run', '📈 장 시작 전 실행',
+    ['scripts/run_premarket.py'],
+    `스크리너로 유니버스를 랭킹하고 브레인 판단 → 게이트 통과분만 모의 주문을 냅니다. (${TRADING_TOOL_SENTINEL})
+
+- 평일 장 시작 전 1회 실행하세요. 주말·휴장일엔 KIS 모의서버가 주문을 받지 않습니다.
+- 모의투자 전용입니다. 실거래 API는 연결돼 있지 않습니다.
+- 게이트에서 전부 기각돼 0건 주문으로 끝나는 것도 정상입니다.`);
+
+  _seedTradingTool(toolsDir, 'backtest_run', '🧪 백테스트',
+    ['scripts/run_backtest.py'],
+    `과거 구간으로 전략을 재현합니다. 슬리피지·수수료가 반영된 결과만 신뢰하세요. (${TRADING_TOOL_SENTINEL})
+
+결과는 trading/state/backtest_*.json 으로 저장되고 성과판의 실패 패턴·변경 전후 비교 표에 반영됩니다.`);
+
+  _seedTradingTool(toolsDir, 'improve_run', '💡 개선 카드 생성',
+    ['scripts/run_improve.py'],
+    `진단 결과에서 변경 제안 카드를 만들어 심사 대기 큐에 넣습니다. (${TRADING_TOOL_SENTINEL})
+
+카드는 제안일 뿐입니다 — 승인 후 코다리가 구현하고, 게이트·전체 테스트를 다시 통과해야 반영됩니다.`);
+}
+
+/** 현빈(사후분석) — 마감 후 회고 */
+function _seedAnalystTradingTools(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'postmarket_review', '📊 마감 후 사후분석',
+    ['scripts/run_postmarket.py', '--review'],
+    `당일 체결·손익을 집계하고 실패 패턴을 정리합니다. (${TRADING_TOOL_SENTINEL})
+
+주문 지시는 하지 않습니다 — 관찰과 개선 재료만 만듭니다.
+gate_status.json·equity_log.jsonl 이 여기서 갱신되며, 커맨드 센터의 일일 한도 소진율이 채워집니다.`);
+}
+
+/** 코다리(코드) — 안전층 회귀 테스트 */
+function _seedDeveloperTradingTests(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'trading_tests', '✅ 트레이딩 전체 테스트',
+    ['-m', 'pytest', '-q'],
+    `킬스위치·일일 손실 한도·리스크/컴플라이언스 게이트·스키마 검증을 포함한 전체 테스트를 돌립니다. (${TRADING_TOOL_SENTINEL})
+
+코드 변경을 "완료"라고 보고하기 전에 반드시 여기 출력으로 뒷받침하세요. 실패가 하나라도 있으면 미검증입니다.`);
+}
+
+/** 영숙(비서) — 실행 전 준비 점검 */
+function _seedSecretaryTradingSmoke(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'kis_smoke', '🔌 KIS 모의서버 연결 점검',
+    ['scripts/smoke_kis.py'],
+    `KIS 모의투자 서버에 토큰이 발급되고 시세가 조회되는지 확인합니다. (${TRADING_TOOL_SENTINEL})
+
+장 시작 전 실행 전에 먼저 돌려보세요. 판단은 하지 않고 연결 가능 여부만 보고합니다.`);
 }
 
 function _seedFile(p: string, content: string) {
@@ -7574,6 +7725,161 @@ OS 차이: 백그라운드 프로세스는 맥/리눅스에선 \`nohup ... &\`, 
 // On any conflict / auth failure, surface a friendly message
 // and let the user resolve it via the manual sync menu.
 // ============================================================
+/* ── 트레이딩 게이트 상태 (trading/state/gate_status.json — Python 엔진이 생성) ──
+   리스크&포지션 커맨드 센터의 데이터 소스. 파일 없음/손상 시 null (표시만 비움). */
+type TradingGateStatus = {
+    date: string;
+    killswitch_engaged: boolean;
+    killswitch_reason: string;
+    daily_blocked: boolean;
+    daily_limit_used_pct: number | null;
+    gate_rejections_today: number;
+};
+/* 2026-07-19 — trading 폴더 위치 해석.
+   기존 코드는 `<workspace>/trading` 하나만 봤는데 실제 프로젝트는
+   `<workspace>/connect-ai/trading` 에 있어서 커맨드 센터·성과판이 전부
+   빈 값으로 렌더되고 있었다. 후보를 순서대로 확인하고 첫 번째 실재 폴더를
+   쓴다. 설정(connectAiLab.tradingDir)이 있으면 그게 최우선. */
+function _resolveTradingRoot(): string | null {
+    const candidates: string[] = [];
+    try {
+        const cfg = vscode.workspace.getConfiguration('connectAiLab').get<string>('tradingDir');
+        if (cfg && cfg.trim()) candidates.push(cfg.trim());
+    } catch { /* 설정 없음 */ }
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        const r = f.uri.fsPath;
+        candidates.push(path.join(r, 'trading'));
+        candidates.push(path.join(r, 'connect-ai', 'trading'));
+        candidates.push(path.join(r, 'autotrader_fable'));
+    }
+    /* 확장에 번들된 사본 — 워크스페이스가 트레이딩 저장소가 아닐 때의 최후 수단 */
+    if (_dashboardExtensionUri) candidates.push(path.join(_dashboardExtensionUri.fsPath, 'trading'));
+    for (const c of candidates) {
+        try { if (fs.existsSync(path.join(c, 'autotrader'))) return c; } catch { /* 다음 후보 */ }
+    }
+    return null;
+}
+
+/** trading/state/<file> 절대 경로. trading 폴더를 못 찾으면 null. */
+function _tradingStatePath(file: string): string | null {
+    const root = _resolveTradingRoot();
+    return root ? path.join(root, 'state', file) : null;
+}
+
+function _readTradingGateStatus(): TradingGateStatus | null {
+    try {
+        const p = _tradingStatePath('gate_status.json');
+        if (!p || !fs.existsSync(p)) return null;
+        return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch { return null; }
+}
+
+function _tradingGateCardHtml(): string {
+    /* 히어로 = 일일손실한도 소진율 + 킬스위치 상태 (매출 아님 — 스펙 UI 재구성).
+       기존 revenue-card의 엘리먼트 id를 유지해 dashboard.js와의 호환을 지킨다. */
+    const gs = _readTradingGateStatus();
+    const ks = gs?.killswitch_engaged === true;
+    const used = (gs && gs.daily_limit_used_pct !== null && gs.daily_limit_used_pct !== undefined)
+        ? `${Math.round(gs.daily_limit_used_pct * 100)}%` : '—';
+    const rej = gs ? String(gs.gate_rejections_today) : '—';
+    const sub = !gs
+        ? 'trading/state/gate_status.json 없음 — postmarket 실행 후 표시됩니다'
+        : ks
+            ? `🛑 킬스위치 ON — ${gs.killswitch_reason || '수동 정지'}`
+            : gs.daily_blocked
+                ? '⛔ 일일 손실 한도 도달 — 오늘 매매 차단 (다음 거래일 자동 해제)'
+                : `모의투자 정상 운용 · 기준일 ${gs.date}`;
+    return `<!-- 트레이딩 커맨드 센터 — 매출 카드 대체 (v2.89.142 자리) -->
+  <section class="card span-12 revenue-card" id="revenueCard" data-trading="1">
+    <div class="rev-glyph-rain" aria-hidden="true"></div>
+    <div class="rev-inner">
+      <div class="rev-left">
+        <div class="rev-eyebrow">RISK &amp; POSITION COMMAND CENTER · <span class="rev-live"><span class="rev-pulse"></span> PAPER</span></div>
+        <div class="rev-title">🛡️ 리스크&amp;포지션 커맨드 센터</div>
+        <div class="rev-sub" id="revSubtitle">${sub}</div>
+      </div>
+      <div class="rev-kpis" id="revKpis">
+        <div class="rev-kpi"><div class="rev-kpi-l">일일 한도 소진율</div><div class="rev-kpi-v" id="revMonth">${used}</div></div>
+        <div class="rev-kpi"><div class="rev-kpi-l">킬스위치</div><div class="rev-kpi-v" id="revWeek">${ks ? 'ON' : 'OFF'}</div></div>
+        <div class="rev-kpi"><div class="rev-kpi-l">오늘 게이트 거부</div><div class="rev-kpi-v" id="revCount">${rej}</div></div>
+      </div>
+      <div class="rev-spark">
+        <svg id="revSparkSvg" viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="rev-actions">
+        <button class="rev-btn primary" id="openRevDashBtn">
+          <span class="rev-btn-glow"></span>
+          <span>리스크조정 성과판</span>
+          <span class="rev-btn-arrow">→</span>
+        </button>
+        <button class="rev-btn ghost" id="askHyunbinBtn" title="마감 후 사후분석 리포트 의뢰">🧠 사후분석 의뢰</button>
+      </div>
+    </div>
+  </section>`;
+}
+
+function _tradingProposalsCardHtml(): string {
+    /* 변경 제안 큐 (trading/state/proposals/pending/*.json — Python 큐가 생성).
+       조회 전용 — 승인/거부는 큐 CLI 또는 에이전트 지시로 수행 (유일한 승인 지점). */
+    let items = '';
+    let count = 0;
+    try {
+        const dir = _tradingStatePath(path.join('proposals', 'pending'));
+        {
+            if (dir && fs.existsSync(dir)) {
+                for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json')).sort()) {
+                    const card = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+                    const title = String(card.proposal || '').split('\n')[0].slice(0, 70);
+                    const diag = String(card.diagnosis || '').slice(0, 90);
+                    items += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.15)">
+                      <div style="font-weight:600">${card.id} — ${title}</div>
+                      <div style="opacity:.7;font-size:12px">${diag}</div></div>`;
+                    count++;
+                }
+            }
+        }
+    } catch { /* 조회 실패 시 빈 카드 — 표시 전용이므로 무해 */ }
+    const body = items || '<div class="empty subtle">심사 대기 카드 없음 — run_improve.py로 생성됩니다.</div>';
+    return `<section class="card span-5" id="tradingProposalsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">🗂️</span> 변경 제안 큐 (트레이딩)</div>
+      <span class="badge warn">${count}</span>
+    </div>
+    <div>${body}</div>
+    <div style="opacity:.6;font-size:11px;margin-top:6px">승인/거부/수정지시는 카드 ID로 에이전트에게 지시 — 승인 시 게이트·전체 테스트 재통과 후에만 반영</div>
+  </section>`;
+}
+
+function _tradingPositionsCardHtml(): string {
+    /* 라이브 포지션 메타 (trading/state/holdings.json — 수량은 KIS 잔고 기준이라 별도). */
+    let rows = '';
+    let count = 0;
+    try {
+        const p = _tradingStatePath('holdings.json');
+        {
+            if (p && fs.existsSync(p)) {
+                const metas = JSON.parse(fs.readFileSync(p, 'utf-8'));
+                for (const [sym, m] of Object.entries<any>(metas)) {
+                    rows += `<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px">
+                      <span style="font-weight:600">${sym}</span>
+                      <span>손절 ${Number(m.stop_price).toLocaleString()}</span>
+                      <span>목표 ${Number(m.target_price).toLocaleString()}</span>
+                      <span style="opacity:.7">${m.entry_date} 진입 · ${m.horizon_days}일</span></div>`;
+                    count++;
+                }
+            }
+        }
+    } catch { /* 표시 전용 */ }
+    const body = rows || '<div class="empty subtle">보유 포지션 없음 (premarket 실행 후 갱신)</div>';
+    return `<section class="card span-7" id="tradingPositionsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">📌</span> 라이브 포지션 (모의)</div>
+      <span class="badge">${count}</span>
+    </div>
+    <div>${body}</div>
+  </section>`;
+}
+
 /* ── 절대규칙 4: 트레이딩 크레덴셜 push 방지 가드 ─────────────────────
    자동 git 동기화가 스테이징한 파일에 트레이딩 비밀/상태가 섞여 있으면
    커밋·푸시 전에 스테이징을 전부 해제하고 동기화를 중단한다. 100% 결정적. */
@@ -11238,13 +11544,20 @@ class CompanyDashboardPanel {
                    화면엔 "한 번 클릭으로 끝나는" 도구만 노출. 고급 분석(경쟁
                    채널 비교, 트렌드 스나이퍼 등)은 별도 섹션 또는 미래 빌드에서.
                    숨겨진 도구도 폴더엔 그대로 있어서 직접 실행은 가능함. */
+                /* 2026-07-19 — 트레이딩 조직 재편. 콘텐츠 시절 도구는 전부 숨긴다.
+                   기존 설치의 파일은 지우지 않고(사용자 데이터) 목록에서만 제외 —
+                   폴더를 직접 열면 그대로 있고 수동 실행도 가능하다. */
                 const HIDDEN_TOOLS_BY_AGENT: Record<string, string[]> = {
                     youtube: [
-                        'youtube_account',     /* 설정 허브 — 외부 연결 패널과 중복 */
-                        'competitor_brief',    /* COMPETITOR_CHANNELS 추가 입력 필요 — 고급 */
-                        'trend_sniper',        /* WATCHED_CHANNELS 추가 입력 필요 — 고급 */
-                        'comment_harvester',   /* WATCHED_CHANNELS 추가 입력 필요 — 고급 */
-                        'telegram_notify',     /* 인프라 — 다른 도구가 자동 사용 */
+                        'youtube_account', 'competitor_brief', 'trend_sniper',
+                        'comment_harvester', 'telegram_notify', 'auto_planner',
+                        'channel_full_analysis', 'my_videos_check',
+                    ],
+                    business: [
+                        'paypal_revenue',      /* 트레이딩 조직엔 매출 개념이 없음 */
+                    ],
+                    developer: [
+                        'web_init', 'web_preview', 'pwa_setup',  /* 콘텐츠 시절 웹 셋업 */
                     ],
                     secretary: [
                         'telegram_setup',      /* 외부 연결 패널과 중복 */
@@ -11311,6 +11624,7 @@ class CompanyDashboardPanel {
                 color: a.color,
                 specialty: a.specialty,
                 tagline: a.tagline || '',
+                mission: a.mission || '',
                 openTasks: myTasks.length,
                 autonomy: lvl,
                 autonomyLabel: AUTONOMY_LABELS[lvl] || 'Off',
@@ -11506,34 +11820,7 @@ class CompanyDashboardPanel {
     <div class="team-grid" id="teamBody"></div>
   </section>
 
-  <!-- v2.89.142 — 매출 카드. 회사 대시보드 메인 진입점.
-       클릭하면 풀 매출 대시보드 패널 (매트릭스 풍) 열림. -->
-  <section class="card span-12 revenue-card" id="revenueCard">
-    <div class="rev-glyph-rain" aria-hidden="true"></div>
-    <div class="rev-inner">
-      <div class="rev-left">
-        <div class="rev-eyebrow">REVENUE COMMAND CENTER · <span class="rev-live"><span class="rev-pulse"></span> LIVE</span></div>
-        <div class="rev-title">💰 매출 컨트롤 센터</div>
-        <div class="rev-sub" id="revSubtitle">PayPal 연결을 확인하는 중…</div>
-      </div>
-      <div class="rev-kpis" id="revKpis">
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">이번 달</div><div class="rev-kpi-v" id="revMonth">—</div></div>
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">7일</div><div class="rev-kpi-v" id="revWeek">—</div></div>
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">거래</div><div class="rev-kpi-v" id="revCount">—</div></div>
-      </div>
-      <div class="rev-spark">
-        <svg id="revSparkSvg" viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
-      </div>
-      <div class="rev-actions">
-        <button class="rev-btn primary" id="openRevDashBtn">
-          <span class="rev-btn-glow"></span>
-          <span>풀스크린 매출 대시보드</span>
-          <span class="rev-btn-arrow">→</span>
-        </button>
-        <button class="rev-btn ghost" id="askHyunbinBtn" title="현빈 에이전트에게 매출 분석 요청">🧠 현빈에게 분석 의뢰</button>
-      </div>
-    </div>
-  </section>
+  ${_tradingGateCardHtml()}
 
   <!-- 2) 오늘의 일 — open tasks (left) + approvals (right). Compact. -->
   <section class="card span-7" id="tasksCard">
@@ -11551,6 +11838,10 @@ class CompanyDashboardPanel {
     </div>
     <div id="aprBody"><div class="empty subtle">대기 중인 승인이 없어요.</div></div>
   </section>
+
+  ${_tradingPositionsCardHtml()}
+
+  ${_tradingProposalsCardHtml()}
 
   <!-- 3) YouTube + Analytics — only when API key configured. -->
   <section class="card span-7 yt-cond" id="ytCard" style="display:none">
@@ -12286,6 +12577,74 @@ class RevenueDashboardPanel {
     }
 
     private _html(): string {
+        /* 2026-07-19 — 리스크조정 성과판으로 개편 (스펙 UI 재구성).
+           서버 렌더링: trading/state/* 파일을 패널 열 때 읽는다.
+           revenue-dashboard.js는 PayPal 전용이라 제거 (덮어쓰기 방지). */
+        const tradingRoot = _resolveTradingRoot();
+        const st = (f: string) => tradingRoot ? path.join(tradingRoot, 'state', f) : path.join(' missing', f);
+        const esc = (x: any) => String(x).replace(/</g, '&lt;');
+
+        // 1) 자산곡선 (equity_log.jsonl)
+        let eq: { date: string; equity_krw: number; daily_return_bp: number | null }[] = [];
+        try {
+            if (fs.existsSync(st('equity_log.jsonl'))) {
+                eq = fs.readFileSync(st('equity_log.jsonl'), 'utf-8').split('\n')
+                    .filter(Boolean).map(l => JSON.parse(l));
+            }
+        } catch { /* 표시 전용 */ }
+        const cur = eq.length ? eq[eq.length - 1].equity_krw : null;
+        const first = eq.length ? eq[0].equity_krw : null;
+        const cumPct = (cur && first) ? ((cur / first - 1) * 100).toFixed(2) : null;
+        let peak = 0, mdd = 0;
+        for (const e of eq) { peak = Math.max(peak, e.equity_krw); if (peak > 0) mdd = Math.max(mdd, (peak - e.equity_krw) / peak); }
+        let spark = '';
+        if (eq.length >= 2) {
+            const vals = eq.map(e => e.equity_krw);
+            const lo = Math.min(...vals), hi = Math.max(...vals), rng = Math.max(hi - lo, 1);
+            spark = vals.map((v, i) =>
+                `${(i / (vals.length - 1) * 800).toFixed(1)},${(150 - (v - lo) / rng * 140).toFixed(1)}`
+            ).join(' ');
+        }
+
+        // 2) 게이트 상태
+        const gs = _readTradingGateStatus();
+        const used = (gs && gs.daily_limit_used_pct != null) ? Math.round(gs.daily_limit_used_pct * 100) + '%' : '—';
+
+        // 3) 실패 패턴 (최신 backtest_*.json의 trade_log)
+        let failRows = '';
+        try {
+            const dir = st('');
+            const bt = fs.readdirSync(dir).filter(f => /^backtest_\d{8}_\d{8}\.json$/.test(f)).sort().pop();
+            if (bt) {
+                const d = JSON.parse(fs.readFileSync(path.join(dir, bt), 'utf-8'));
+                const log: any[] = d.trade_log || [];
+                for (const kind of ['stop', 'target', 'time']) {
+                    const rows = log.filter(t => t.exit_kind === kind);
+                    if (!rows.length) continue;
+                    const wins = rows.filter(t => t.pnl_krw > 0).length;
+                    const avg = rows.reduce((a, t) => a + t.pnl_pct, 0) / rows.length;
+                    failRows += `<tr><td>${kind}</td><td>${rows.length}</td><td>${Math.round(wins / rows.length * 100)}%</td><td>${(avg * 100).toFixed(2)}%</td></tr>`;
+                }
+                failRows = `<div style="opacity:.6;font-size:11px;margin-bottom:4px">${esc(bt)}</div>
+                  <table style="width:100%;font-size:12px;text-align:right"><tr style="opacity:.6"><th style="text-align:left">청산</th><th>건수</th><th>승률</th><th>평균</th></tr>${failRows}</table>`;
+            }
+        } catch { /* 표시 전용 */ }
+
+        // 4) 변경 전후 비교 (최신 backtest_compare_*.json)
+        let cmpRows = '';
+        try {
+            const dir = st('');
+            const cf = fs.readdirSync(dir).filter(f => f.startsWith('backtest_compare_')).sort().pop();
+            if (cf) {
+                const d = JSON.parse(fs.readFileSync(path.join(dir, cf), 'utf-8'));
+                for (const [k, v] of Object.entries<any>(d)) {
+                    cmpRows += `<tr><td style="text-align:left">${esc(k)}</td><td>${(v.ret * 100).toFixed(1)}%</td><td>${(v.mdd * 100).toFixed(1)}%</td><td>${v.sharpe.toFixed(2)}</td></tr>`;
+                }
+                cmpRows = `<div style="opacity:.6;font-size:11px;margin-bottom:4px">${esc(cf)}</div>
+                  <table style="width:100%;font-size:12px;text-align:right"><tr style="opacity:.6"><th style="text-align:left">변형|구간</th><th>수익률</th><th>MDD</th><th>샤프</th></tr>${cmpRows}</table>`;
+            }
+        } catch { /* 표시 전용 */ }
+
         return `<!doctype html><html><head><meta charset="utf-8">
 <style>${_loadWebviewAsset('revenue-dashboard.css')}</style>
 </head><body>
@@ -12293,97 +12652,67 @@ class RevenueDashboardPanel {
 
 <div class="wrap">
   <header class="hero">
-    <div class="hero-mark">💰</div>
+    <div class="hero-mark">🛡️</div>
     <div class="hero-info">
-      <div class="eyebrow">CONNECT AI · REVENUE COMMAND CENTER</div>
-      <h1>매출 대시보드</h1>
-      <div class="hero-sub">
-        PayPal 거래 실시간 분석 · 게임별 매출 분해 · <span class="live">LIVE</span>
-        <span style="margin-left: 8px; color: var(--text-3); font-size: 0.8rem;" id="generated"></span>
+      <div class="eyebrow">CONNECT AI · RISK-ADJUSTED PERFORMANCE</div>
+      <h1>리스크조정 성과판</h1>
+      <div class="hero-sub">모의투자 관찰 지표 · 절대수익은 목표가 아니라 결과 · <span class="live">PAPER</span>
+        <span style="margin-left:8px;color:var(--text-3);font-size:0.8rem">패널을 다시 열면 갱신됩니다</span>
       </div>
-    </div>
-    <div class="hero-actions">
-      <button class="btn" id="refreshBtn">🔄 새로고침</button>
-      <button class="btn" id="settingsBtn">⚙️ 설정</button>
     </div>
   </header>
 
-  <div id="emptyArea" class="hidden"></div>
-
-  <!-- KPI strip -->
   <div class="kpi-strip">
     <div class="kpi today">
-      <div class="kpi-label">오늘 매출</div>
-      <div class="kpi-value" id="kpiToday" data-last="0">0.00</div>
-      <div class="kpi-unit"><span id="curLabel">USD</span></div>
+      <div class="kpi-label">총평가 (모의)</div>
+      <div class="kpi-value">${cur != null ? cur.toLocaleString() : '—'}</div>
+      <div class="kpi-unit">KRW${cumPct != null ? ` · 누적 ${cumPct}%` : ''}</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">지난 7일</div>
-      <div class="kpi-value" id="kpiWeek" data-last="0">0.00</div>
-      <div class="kpi-unit">7-day rolling</div>
+      <div class="kpi-label">관찰 MDD (운용)</div>
+      <div class="kpi-value">${eq.length ? (mdd * 100).toFixed(1) + '%' : '—'}</div>
+      <div class="kpi-unit">equity_log 기준</div>
     </div>
     <div class="kpi month">
-      <div class="kpi-label">이번 달 (30일)</div>
-      <div class="kpi-value" id="kpiMonth" data-last="0">0.00</div>
-      <div class="kpi-sub" id="kpiMonthSub">—</div>
+      <div class="kpi-label">일일 한도 소진율</div>
+      <div class="kpi-value">${used}</div>
+      <div class="kpi-sub">한도 -3% 대비</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">순매출 / 거래수</div>
-      <div class="kpi-value" id="kpiNet" data-last="0">0.00</div>
-      <div class="kpi-unit"><span id="kpiCount" data-last="0">0</span>건</div>
+      <div class="kpi-label">킬스위치 / 오늘 거부</div>
+      <div class="kpi-value">${gs ? (gs.killswitch_engaged ? 'ON' : 'OFF') : '—'}</div>
+      <div class="kpi-unit">${gs ? gs.gate_rejections_today + '건 거부' : 'postmarket 후 표시'}</div>
     </div>
   </div>
 
-  <!-- Sparkline + Donut row -->
   <div class="row">
     <div class="card">
       <div class="section">
-        <h2>30일 일별 매출 추이</h2>
+        <h2>자산곡선 (마감 스냅샷)</h2>
         <div class="spark-wrap">
-          <svg class="spark-svg" id="sparkSvg" viewBox="0 0 800 160" preserveAspectRatio="none"></svg>
+          ${spark
+            ? `<svg class="spark-svg" viewBox="0 0 800 160" preserveAspectRatio="none"><polyline points="${spark}" fill="none" stroke="#22d3ee" stroke-width="2"/></svg>`
+            : `<div style="opacity:.6;padding:24px">기록 없음 — run_postmarket.py 실행이 쌓이면 그려집니다 (${eq.length}일)</div>`}
         </div>
       </div>
     </div>
     <div class="card">
       <div class="section">
-        <h2>프로젝트 구성</h2>
-        <div class="donut-wrap">
-          <div class="donut-rel">
-            <svg class="donut-svg" id="donutSvg" viewBox="0 0 200 200"></svg>
-            <div class="donut-center">
-              <div class="label">Total</div>
-              <div class="val" id="donutCenterVal" data-last="0">0</div>
-            </div>
-          </div>
-          <div class="donut-legend" id="donutLegend"></div>
-        </div>
+        <h2>실패 패턴 (백테스트 청산 사유별)</h2>
+        ${failRows || '<div style="opacity:.6;padding:24px">backtest_*.json 없음 — run_backtest.py 실행 후 표시</div>'}
       </div>
     </div>
   </div>
 
-  <!-- Project bars + Transaction feed -->
   <div class="row" style="margin-top: 20px;">
     <div class="card">
       <div class="section">
-        <h2>프로젝트별 상세</h2>
-        <div id="projBars"></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section">
-        <h2>최근 거래</h2>
-        <div class="feed" id="feed">
-          <div class="skeleton" style="height: 60px; margin-bottom: 10px;"></div>
-          <div class="skeleton" style="height: 60px; margin-bottom: 10px;"></div>
-          <div class="skeleton" style="height: 60px;"></div>
-        </div>
+        <h2>변경 전후 비교 (V0 vs 채택 후보)</h2>
+        ${cmpRows || '<div style="opacity:.6;padding:24px">backtest_compare_*.json 없음 — run_backtest.py --compare 실행 후 표시</div>'}
       </div>
     </div>
   </div>
 </div>
-
-<div class="burst" id="burst"></div>
-<script>${_loadWebviewAsset('revenue-dashboard.js')}</script>
 </body></html>`;
     }
 }
@@ -13940,8 +14269,8 @@ body.dispatching .beams{opacity:1}
   <div class="fr-head">
     <div class="fr-icon">💰</div>
     <div class="fr-title">
-      <div class="fr-eyebrow">REVENUE · <span class="fr-live"><span class="fr-pulse"></span>LIVE</span></div>
-      <div class="fr-name">매출 컨트롤 센터</div>
+      <div class="fr-eyebrow">GATE STATUS · <span class="fr-live"><span class="fr-pulse"></span>PAPER</span></div>
+      <div class="fr-name">게이트 상태판</div>
     </div>
     <button class="fr-close" id="frClose" title="숨기기">✕</button>
   </div>
@@ -17498,6 +17827,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                         emoji: AGENTS[id].emoji,
                                         color: AGENTS[id].color,
                                         tagline: AGENTS[id].tagline,
+                                        mission: AGENTS[id].mission || '',
                                         specialty: AGENTS[id].specialty,
                                         portrait: view.webview.asWebviewUri(portraitUri).toString(),
                                         portraitIsCustom: !!customName && fs.existsSync(vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', customName).fsPath),

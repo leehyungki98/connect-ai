@@ -24,6 +24,7 @@ _CODEX_SCHEMA = Path(__file__).with_name("codex_output_schema.json")
 
 CLI_COMMANDS = {
     "claude": ["claude", "-p"],   # 프롬프트는 마지막 인자
+    "opus": ["claude", "--model", "opus", "-p"],  # 코다리 (코드 diff 구현)
     "codex": ["codex", "exec", "--output-schema", str(_CODEX_SCHEMA)],
 }
 CLI_TIMEOUT_SEC = 300
