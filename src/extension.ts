@@ -608,13 +608,14 @@ function runCommandCaptured(
     cwd: string,
     onChunk: (text: string) => void,
     timeoutMs = 60000,
-    captureStream: 'both' | 'stdout' = 'both'
+    captureStream: 'both' | 'stdout' = 'both',
+    extraEnv?: Record<string, string>
 ): Promise<{ exitCode: number; output: string; timedOut: boolean }> {
     return new Promise((resolve) => {
         const child = spawn(cmd, {
             cwd,
             shell: true,
-            env: process.env,
+            env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
             stdio: ['ignore', 'pipe', 'pipe']
         });
         let buf = '';
@@ -625,11 +626,14 @@ function runCommandCaptured(
             if (buf.length > 30000) buf = buf.slice(-30000);
             onChunk(s);
         };
-        child.stdout?.on('data', (d: Buffer) => append(d.toString()));
+        /* 스트리밍 청크는 멀티바이트 문자 중간에서 잘릴 수 있어 StringDecoder 사용. */
+        const outDec = new StringDecoder('utf8');
+        const errDec = new StringDecoder('utf8');
+        child.stdout?.on('data', (d: Buffer) => append(outDec.write(d)));
         /* v2.89.50 — captureStream='stdout' 일 때 stderr는 무시. 스크립트가 진행 메시지·
            로그·DeprecationWarning을 stderr로 보내도 채팅창엔 안 새서 깔끔. */
         if (captureStream === 'both') {
-            child.stderr?.on('data', (d: Buffer) => append(d.toString()));
+            child.stderr?.on('data', (d: Buffer) => append(errDec.write(d)));
         }
         const killTimer = setTimeout(() => {
             timedOut = true;
@@ -2837,10 +2841,23 @@ async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
                 console.warn(`[scheduler] tool not found: ${scriptPath}`);
                 return;
             }
-            const r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 120000);
+            /* PYTHONIOENCODING — 윈도우 파이썬은 콘솔 기본 인코딩(cp949)으로 찍어서
+               UTF-8로 읽는 이쪽에서 한글이 깨진다. 자식 프로세스까지 상속된다. */
+            const r = await runCommandCaptured(
+                `${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 120000,
+                'both', { PYTHONIOENCODING: 'utf-8' },
+            );
             const out = (r.output || '').trim();
             const status = r.exitCode === 0 ? '✅' : `❌ exit ${r.exitCode}`;
-            const msg = `📆 *${entry.label}* (스케줄 자동 실행) ${status}\n\n\`\`\`\n${out.slice(0, 3000)}\n\`\`\``;
+            /* 매수·매도는 사장님이 제일 먼저 볼 줄이라 본문 위로 뽑아낸다.
+               판단은 하지 않고 스크립트가 찍은 줄을 그대로 옮기기만 한다. */
+            const trades = out.split('\n')
+                .map(l => l.trim())
+                .filter(l => /^(BUY|EXIT)\s*:/i.test(l));
+            const head = trades.length
+                ? `\n\n💰 *체결*\n${trades.map(t => `• ${t}`).join('\n')}`
+                : '';
+            const msg = `📱 *영숙* — ${entry.label} ${status}${head}\n\n\`\`\`\n${out.slice(0, 2500)}\n\`\`\``;
             try { await sendTelegramLong(msg); } catch { /* silent */ }
             try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} 자동 실행 ${status}`, '📆'); } catch { /* ignore */ }
         }
