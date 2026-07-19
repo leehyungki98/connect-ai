@@ -38,8 +38,8 @@ export interface AgentDef {
 export const AGENTS: Record<string, AgentDef> = {
   ceo: {
     id: 'ceo',
-    name: 'CEO',
-    role: 'Trading Desk Orchestrator',
+    name: '총괄팀장',
+    role: '데스크 총괄 · Orchestrator',
     emoji: '🧭',
     color: '#F8FAFC',
     specialty: '트레이딩 데스크 오케스트레이션, 작업 분해, 종합 판단, 다음 액션 결정',

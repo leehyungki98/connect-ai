@@ -2292,36 +2292,17 @@ function _buildCapabilityReport(): string {
     lines.push('  ✅ "내일까지 X 해야 해" → 자동 등록, 마감 임박 시 알림');
     lines.push('');
     /* 2) 다른 에이전트들의 능력 */
-    lines.push('*👥 회사 에이전트들 (자연어로 부르세요)*');
+    lines.push('*👥 데스크 팀원들 (자연어로 부르세요)*');
     const agentSummary: string[] = [];
-    /* YouTube 상태 */
-    try {
-        const cfgPath = path.join(getCompanyDir(), '_agents', 'youtube', 'config.md');
-        const txt = _safeReadText(cfgPath);
-        const apiKey = (txt.match(/YOUTUBE_API_KEY\s*[:：=]\s*([A-Za-z0-9_\-]+)/) || [])[1] || '';
-        const channelId = (txt.match(/YOUTUBE_CHANNEL_ID\s*[:：=]\s*([A-Za-z0-9_\-]+)/) || [])[1] || '';
-        if (apiKey && channelId) {
-            const oauth = isYoutubeOAuthConnected();
-            agentSummary.push('  📺 *YouTube* — ✅ 채널 분석·트렌드' + (oauth ? '·시청 지속률·트래픽' : ' (Analytics는 OAuth 필요)'));
-        } else {
-            agentSummary.push('  📺 *YouTube* — ⚠️ API 키·채널 ID 필요');
-        }
-    } catch {
-        agentSummary.push('  📺 *YouTube* — ⚠️ 설정 필요');
-    }
-    /* LLM 기반 에이전트들 — 항상 가능 */
-    agentSummary.push('  🎨 *디자이너* — ✅ 시안 카피·무드보드·브랜드 컬러 가이드');
-    agentSummary.push('  ✍️ *작가* — ✅ 후크·스크립트·블로그·영상 카피');
-    agentSummary.push('  🎵 *루나* — ✅ BGM 자동 생성·영상-음악 합성·사운드 디자인');
-    agentSummary.push('  💼 *현빈* — ✅ 가격·KPI·전략 분석');
-    agentSummary.push('  💻 *코다리* — ✅ 사이트·자동화·API 코드');
-    agentSummary.push('  🔍 *리서처* — ✅ 트렌드·경쟁사·사실 확인');
-    agentSummary.push('  📷 *Instagram* — ✅ 릴스 기획·해시태그·카피');
+    agentSummary.push('  📈 *레오* — ✅ 종목 선정·후보 검토·프리마켓·백테스트·개선안');
+    agentSummary.push('  ⚖️ *판정자* — ✅ 제안 판정 (근거 모순·중복 베팅만 기각)');
+    agentSummary.push('  💻 *코다리* — ✅ 승인된 개선안 코드 구현·테스트');
+    agentSummary.push('  📊 *현빈* — ✅ 사후분석·실패 패턴·샤프/MDD 관찰');
     lines.push(agentSummary.join('\n'));
     lines.push('');
     lines.push('*예시:*');
-    lines.push('• "다음 영상 컨셉 5개 뽑아줘" → CEO가 YouTube·작가에게 분배');
-    lines.push('• "썸네일 시안 만들어줘" → 디자이너로');
+    lines.push('• "오늘 성과 어때?" → 현빈이 사후분석');
+    lines.push('• "개선안 뽑아줘" → 레오가 제안 카드 작성');
     lines.push('• "오늘 일정 뭐야?" → 제가 바로 답변');
     lines.push('• "에이전트 뭐 하고 있어?" → 진행 중 작업 모두');
     lines.push('');
