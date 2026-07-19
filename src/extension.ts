@@ -5,6 +5,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync } from 'child_process';
+/* SSE 청크는 TCP 경계에서 잘리므로 한글(3바이트)이 두 청크에 걸치면
+   Buffer.toString() 이 각 조각을 따로 디코드해 U+FFFD 로 깨진다.
+   StringDecoder 는 불완전한 바이트를 다음 청크까지 물고 있는다. */
+import { StringDecoder } from 'string_decoder';
 
 // ============================================================
 // Security helpers
@@ -19140,8 +19144,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = response.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) {
                             // Buffer가 비정상적으로 커짐 → 라인 구분자가 없는 응답일 수 있음. 강제로 자른다.
                             buffer = buffer.slice(-MAX_STREAM_BUFFER);
@@ -19181,8 +19186,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = response.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                         const lines = buffer.split('\n'); buffer = lines.pop() || '';
                         for (const line of lines) {
@@ -19390,8 +19396,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             await new Promise<void>((resolve, reject) => {
                 const stream = response.data;
                 let buffer = '';
+                const decoder = new StringDecoder('utf8');
                 stream.on('data', (chunk: Buffer) => {
-                    buffer += chunk.toString();
+                    buffer += decoder.write(chunk);
                     if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
@@ -19495,8 +19502,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = followUpResponse.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                         const lines = buffer.split('\n');
                         buffer = lines.pop() || '';
@@ -21323,6 +21331,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         const IDLE_TIMEOUT_MS = (cfg.get<number>('streamIdleTimeoutSec', 60) || 60) * 1000;
         await new Promise<void>((resolve, reject) => {
             let buffer = '';
+            const decoder = new StringDecoder('utf8');
             let firstTokenReceived = false;
             let lastChunkAt = Date.now();
             let settled = false;
@@ -21350,7 +21359,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             if (signal) signal.addEventListener('abort', onAbort, { once: true });
             stream.on('data', (chunk: Buffer) => {
                 lastChunkAt = Date.now();
-                buffer += chunk.toString();
+                buffer += decoder.write(chunk);
                 if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                 const lines = buffer.split('\n'); buffer = lines.pop() || '';
                 for (const line of lines) {
