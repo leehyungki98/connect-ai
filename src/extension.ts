@@ -7750,7 +7750,6 @@ function _resolveTradingRoot(): string | null {
         const r = f.uri.fsPath;
         candidates.push(path.join(r, 'trading'));
         candidates.push(path.join(r, 'connect-ai', 'trading'));
-        candidates.push(path.join(r, 'autotrader_fable'));
     }
     /* 확장에 번들된 사본 — 워크스페이스가 트레이딩 저장소가 아닐 때의 최후 수단 */
     if (_dashboardExtensionUri) candidates.push(path.join(_dashboardExtensionUri.fsPath, 'trading'));
