@@ -697,6 +697,30 @@ function _isLMStudioEngine(ollamaBase: string): boolean {
     return ollamaBase.includes('1234') || ollamaBase.includes('v1');
 }
 
+/* Gemini는 OpenAI 호환 엔드포인트를 제공한다. 기존 LM Studio 분기가 이미
+   /chat/completions + SSE 스트리밍이라 요청·응답 모양이 그대로 맞는다.
+   그래서 새 분기를 만들지 않고 주소와 인증 헤더만 갈아끼운다.
+   판별 기준은 모델 이름 — gemini-* 면 클라우드, 아니면 로컬 엔진. */
+const GEMINI_OPENAI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
+function _geminiApiKey(): string {
+    try {
+        return (vscode.workspace.getConfiguration('connectAiLab').get<string>('geminiApiKey', '') || '').trim();
+    } catch { return ''; }
+}
+/** 모델이 Gemini면 {url, headers}, 아니면 null. 키가 없으면 던진다 —
+ *  조용히 로컬로 폴백하면 "왜 Gemini가 안 쓰이지"로 헤매게 된다. */
+function _geminiEndpoint(modelName: string): { url: string; headers: Record<string, string> } | null {
+    if (!/^gemini[-.]/i.test((modelName || '').trim())) return null;
+    const key = _geminiApiKey();
+    if (!key) {
+        throw new Error('Gemini 모델이 지정됐는데 API 키가 없습니다 — 설정에서 connectAiLab.geminiApiKey를 입력하세요.');
+    }
+    return {
+        url: `${GEMINI_OPENAI_BASE}/chat/completions`,
+        headers: { Authorization: `Bearer ${key}` },
+    };
+}
+
 /* v2.89.66 — _getBrainDir, _isBrainDirExplicitlySet, getCompanyDir, COMPANY_SUBDIR,
    _expandTilde, _resolvePathInput 모두 ./paths.ts 로 이동. 모듈 간 import 일원화. */
 import { _getBrainDir, _isBrainDirExplicitlySet, getCompanyDir, COMPANY_SUBDIR, _expandTilde, _resolvePathInput } from './paths';
@@ -2003,21 +2027,30 @@ function readToolAutonomyLevel(agentId: string): number {
     return 2; // Draft is the safe default — agent prepares, user approves.
 }
 
-async function _quickLLMCall(systemPrompt: string, userMsg: string, maxTokens = 64): Promise<string> {
+async function _quickLLMCall(systemPrompt: string, userMsg: string, maxTokens = 64, agentId = ''): Promise<string> {
     const { ollamaBase, defaultModel, timeout } = getConfig();
-    const isLMStudio = _isLMStudioEngine(ollamaBase);
-    const apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
+    /* agentId를 주면 그 에이전트에 배정된 모델을 쓴다 (_shared/agent_models.json).
+       비서는 lite, 총괄은 flash 처럼 자리마다 다른 모델을 쓰기 위한 것. */
+    const model = (agentId ? getAgentModel(agentId, defaultModel) : defaultModel) || defaultModel;
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMsg }
     ];
     const tmo = Math.min(timeout || 60000, 60000);
+    const gem = _geminiEndpoint(model);
+    if (gem) {
+        const body = { model, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
+        const r = await axios.post(gem.url, body, { timeout: tmo, headers: gem.headers });
+        return r.data?.choices?.[0]?.message?.content?.toString().trim() || '';
+    }
+    const isLMStudio = _isLMStudioEngine(ollamaBase);
+    const apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
     if (isLMStudio) {
-        const body = { model: defaultModel, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
+        const body = { model, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
         const r = await axios.post(apiUrl, body, { timeout: tmo });
         return r.data?.choices?.[0]?.message?.content?.toString().trim() || '';
     }
-    const body = { model: defaultModel, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
+    const body = { model, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
     const r = await axios.post(apiUrl, body, { timeout: tmo });
     return r.data?.message?.content?.toString().trim() || '';
 }
@@ -2026,7 +2059,7 @@ const CEO_CLASSIFIER_PROMPT = _loadPrompt('ceo-classifier.md');
 const SECRETARY_TELEGRAM_PROMPT = _loadPrompt('secretary-telegram.md');
 async function classifyToAgent(text: string): Promise<string> {
     try {
-        const out = await _quickLLMCall(_personalizePrompt(CEO_CLASSIFIER_PROMPT), text, 16);
+        const out = await _quickLLMCall(_personalizePrompt(CEO_CLASSIFIER_PROMPT), text, 16, 'ceo');
         const id = out.trim().toLowerCase().replace(/[^a-z]/g, '');
         if (AGENTS[id]) return id;
     } catch { /* fall through to keyword router */ }
@@ -2477,7 +2510,7 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
         /* 800 (was 500) — calendar_create with description + location can blow
            past 500 and arrive truncated. Truncated JSON has no balanced close
            brace, defeats the parser, and leaks raw `{"mode":...` to the user. */
-        raw = await _quickLLMCall(SECRETARY_TELEGRAM_PROMPT + ctxBlock, userText, 800);
+        raw = await _quickLLMCall(SECRETARY_TELEGRAM_PROMPT + ctxBlock, userText, 800, 'secretary');
     } catch (e: any) {
         await sendTelegramReport(`⚠️ 비서가 응답하지 못했어요: ${e?.message || e}`);
         return;
@@ -21165,9 +21198,17 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
            특정 에이전트에 다른 모델 할당했으면 그걸 사용. 없으면 기존 로직대로. */
         const overrideModel = getAgentModel(agentId, '');
         if (overrideModel) modelName = overrideModel;
+        /* Gemini면 OpenAI 호환 주소 + 인증 헤더로 갈아끼우고, 나머지는 아래
+           LM Studio 분기(=OpenAI 형식 SSE)를 그대로 탄다. */
+        const gem = _geminiEndpoint(modelName || defaultModel);
+        let extraHeaders: Record<string, string> = {};
         let isLMStudio = _isLMStudioEngine(ollamaBase);
         let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
-        if (!isLMStudio) {
+        if (gem) {
+            isLMStudio = true;
+            apiUrl = gem.url;
+            extraHeaders = gem.headers;
+        } else if (!isLMStudio) {
             try { await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 }); }
             catch { apiUrl = 'http://127.0.0.1:1234/v1/chat/completions'; isLMStudio = true; }
         }
@@ -21204,7 +21245,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                빼고 재시도. 시스템 프롬프트가 이미 JSON-only를 강제하고 있어서 안전. */
             let response;
             try {
-                response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
+                response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal, headers: extraHeaders });
             } catch (err: any) {
                 const status = err?.response?.status;
                 const isStreamErr = err?.response?.data?.on;
@@ -21226,7 +21267,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 const isFormatErr = status === 400 && /response_format|json_schema|json_object/i.test(detail || err?.message || '');
                 if (isFormatErr && body.response_format) {
                     delete body.response_format;
-                    response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
+                    response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal, headers: extraHeaders });
                 } else {
                     throw err;
                 }
