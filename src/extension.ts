@@ -7921,6 +7921,25 @@ function _tradingStatePath(file: string): string | null {
     return root ? path.join(root, 'state', file) : null;
 }
 
+/** 미장팀(us-longterm) 루트 해석 — trading 과 동일 패턴, 마커는 longcore/. */
+function _resolveUsLongtermRoot(): string | null {
+    const candidates: string[] = [];
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        const r = f.uri.fsPath;
+        candidates.push(path.join(r, 'us-longterm'));
+        candidates.push(path.join(r, 'connect-ai', 'us-longterm'));
+    }
+    if (_dashboardExtensionUri) candidates.push(path.join(_dashboardExtensionUri.fsPath, 'us-longterm'));
+    for (const c of candidates) {
+        try { if (fs.existsSync(path.join(c, 'longcore'))) return c; } catch { /* 다음 후보 */ }
+    }
+    return null;
+}
+function _usLongtermStatePath(file: string): string | null {
+    const root = _resolveUsLongtermRoot();
+    return root ? path.join(root, 'state', file) : null;
+}
+
 function _readTradingGateStatus(): TradingGateStatus | null {
     try {
         const p = _tradingStatePath('gate_status.json');
@@ -8061,6 +8080,64 @@ function _tradingPositionsCardHtml(): string {
       <div class="card-title"><span class="title-icon">📌</span> 라이브 포지션 (모의)</div>
       <span class="badge">${count}</span>
     </div>
+    <div>${body}</div>
+  </section>`;
+}
+
+/** 미장팀(us-longterm) 보유 — us-longterm/state/holdings.json (수량) +
+ *  nav_log.jsonl 마지막 줄(NAV·비중·기준일). 표시 전용, 100% 모의. */
+function _usLongtermPositionsCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    // config 슬리브 매핑 (표시용 — 코드 의존 없이 하드코딩)
+    const SLEEVE: Record<string, string> = { VOO: 'ETF', NVDA: '성장주', TSM: '성장주', META: '성장주' };
+    let rows = '';
+    let count = 0;
+    let header = '';
+    try {
+        const hp = _usLongtermStatePath('holdings.json');
+        if (hp && fs.existsSync(hp)) {
+            const data = JSON.parse(fs.readFileSync(hp, 'utf-8'));
+            // 최신 NAV 스냅샷
+            let nav: any = null;
+            const np = _usLongtermStatePath('nav_log.jsonl');
+            if (np && fs.existsSync(np)) {
+                const lines = fs.readFileSync(np, 'utf-8').trim().split('\n').filter(Boolean);
+                if (lines.length) { try { nav = JSON.parse(lines[lines.length - 1]); } catch { /* skip */ } }
+            }
+            for (const b of Object.values<any>(data)) {
+                if (!b || !b.positions) continue;
+                for (const [sym, pos] of Object.entries<any>(b.positions)) {
+                    const sleeve = SLEEVE[sym] || '';
+                    rows += `<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px">
+                      <span style="font-weight:600;min-width:48px">${esc(sym)}</span>
+                      <span>${Number(pos.shares).toFixed(3)}주</span>
+                      <span style="opacity:.6">${esc(sleeve)}</span></div>`;
+                    count++;
+                }
+                if (typeof b.cash_usd === 'number') {
+                    rows += `<div style="display:flex;gap:12px;padding:6px 0;font-size:12px;opacity:.75">
+                      <span style="font-weight:600;min-width:48px">현금</span>
+                      <span>$${Number(b.cash_usd).toFixed(2)}</span>
+                      <span style="opacity:.6">USD</span></div>`;
+                }
+            }
+            if (nav) {
+                const w = nav.weights || {};
+                const wl = ['ETF', 'GROWTH', 'CASH']
+                    .filter(k => typeof w[k] === 'number')
+                    .map(k => `${k} ${(w[k] * 100).toFixed(1)}%`).join(' · ');
+                header = `NAV $${Number(nav.nav_usd).toLocaleString()} · ₩${Number(nav.nav_krw).toLocaleString()} · ${esc(nav.date)} 기준<br>${wl}`;
+            }
+        }
+    } catch { /* 표시 전용 */ }
+    const body = rows || '<div class="empty subtle">미초기화 — run_rebalance.py --init 후 표시</div>';
+    return `<section class="card span-5" id="usLongtermPositionsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">🏛️</span> 미장팀 보유 (모의)</div>
+      <span class="badge">${count}</span>
+    </div>
+    ${header ? `<div style="font-size:11px;opacity:.7;margin-bottom:8px;line-height:1.5">${header}</div>` : ''}
     <div>${body}</div>
   </section>`;
 }
@@ -12056,6 +12133,8 @@ class CompanyDashboardPanel {
   </section>
 
   ${_tradingPositionsCardHtml()}
+
+  ${_usLongtermPositionsCardHtml()}
 
   ${_tradingProposalsCardHtml()}
 
