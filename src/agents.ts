@@ -42,14 +42,30 @@ export interface AgentDef {
 export const AGENTS: Record<string, AgentDef> = {
   ceo: {
     id: 'ceo',
-    name: '총괄팀장',
-    role: '데스크 총괄 · Orchestrator',
+    name: 'CEO',
+    role: '최고경영자 · 두 데스크 총괄',
     emoji: '🧭',
     color: '#F8FAFC',
-    specialty: '트레이딩 데스크 오케스트레이션, 작업 분해, 종합 판단, 다음 액션 결정',
-    tagline: '모의투자 데스크의 의사결정과 작업 분배를 맡습니다 (매매 승인 권한 없음 — 게이트가 최상위)',
-    mission: '🧭 데스크 총괄',
+    specialty: '스윙팀·미장팀 간 업무 분배와 우선순위, 자금배분 제안, 데스크 간 조율, 두 총괄팀장 보고 취합',
+    tagline: '두 데스크의 업무 분배와 조율을 맡습니다 (매매·자금배분 승인권은 사용자 — 게이트가 최상위)',
+    mission: '🧭 CEO',
     desk: 'shared',
+  },
+  /* 스윙팀 총괄팀장 — 미장팀 한도윤과 대칭. 2026-07-21 신설.
+     맨 위 카드가 CEO 로 승격되면서 스윙팀에 팀 내 리더가 비었다. */
+  swing_lead: {
+    id: 'swing_lead',
+    name: '임재훈',
+    role: '스윙팀 총괄팀장 · Desk Lead',
+    emoji: '🎯',
+    color: '#FCD34D',
+    specialty: '일일 파이프라인(프리마켓→게이트→주문) 운영, 레오·판정자 조율, 제안 카드 취합, 사용자 승인 상신',
+    tagline: '매일 도는 데스크를 지킵니다 — 게이트를 건너뛰지 않는 게 일입니다',
+    mission: '🎯 스윙 총괄',
+    desk: 'swing',
+    /* 초상화 슬롯 — 파일 넣으면 자동 반영, 없으면 이모지 폴백 */
+    profileImage: '임재훈.jpeg',
+    persona: '빠르고 결단력 있지만 게이트 앞에서는 멈춘다. "오늘 2종목 진입, 나머지는 관망"처럼 그날 데스크 상태를 한 줄로 요약해 보고한다. 레오처럼 공격하지 않고 판정자처럼 깐깐하지도 않다 — 둘을 붙여 굴리는 역할.'
   },
   youtube: {
     id: 'youtube',
@@ -230,18 +246,19 @@ export const AGENTS: Record<string, AgentDef> = {
 
 export const AGENT_ORDER = [
   'ceo',
-  /* 스윙팀 (trading/) */
-  'youtube', 'instagram', 'business',
-  /* 미장팀 (us-longterm/) */
+  /* 스윙팀 (trading/) — 총괄팀장이 팀 맨 앞 */
+  'swing_lead', 'youtube', 'instagram', 'business',
+  /* 미장팀 (us-longterm/) — 총괄팀장(한도윤)이 팀 맨 앞 */
   'us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review',
   /* 두 팀 공용 */
   'developer', 'secretary',
 ];
 export const SPECIALIST_IDS = AGENT_ORDER.filter(id => id !== 'ceo');
 
-/** 데스크별 묶음 — 조직도 렌더링·보고 라인용. 단일 출처는 루트 DESKS.md. */
+/** 데스크별 묶음 — 조직도 렌더링·보고 라인용. 단일 출처는 루트 DESKS.md.
+    각 팀의 총괄팀장이 ids 맨 앞에 온다 (swing_lead, us_lead). */
 export const DESK_TEAMS: Record<string, { label: string; ids: string[] }> = {
-  swing: { label: '스윙팀 · 한국 주식 (trading/)', ids: ['youtube', 'instagram', 'business'] },
+  swing: { label: '스윙팀 · 한국 주식 (trading/)', ids: ['swing_lead', 'youtube', 'instagram', 'business'] },
   us: { label: '미장팀 · 미국 주식 (us-longterm/)', ids: ['us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review'] },
   shared: { label: '공용', ids: ['developer', 'secretary'] },
 };
