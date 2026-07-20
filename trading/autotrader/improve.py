@@ -34,6 +34,10 @@ class ImproveDraft:
     analysis: str
     diagnosis: str
     proposal: str
+    # 사용자가 코드를 안 보고도 판단할 수 있게 하는 필드. 없으면 빈 문자열.
+    title: str = ""
+    risk: str = ""
+    tradeoff: str = ""
 
 
 # ── 1단: GPT 개선안 제안 ──────────────────────────────────────────────
@@ -49,8 +53,13 @@ def build_improve_prompt(perf_summary: str) -> str:
 
 {FORBIDDEN_NOTE}
 
+사용자는 이 카드만 보고 승인 여부를 정한다. 코드를 모르는 상태에서도
+판단할 수 있게 써라 — 특히 title 은 경로·함수명 없이 한 줄로, risk 는
+"승인 안 하면 남는 위험", tradeoff 는 "승인했을 때의 단점·부작용"이다.
+tradeoff 에 "없음"은 금지다. 되돌리기 비용이라도 적어라.
+
 최대 {MAX_IMPROVEMENTS}건, 아래 JSON 형식으로만 응답하라. JSON 외 텍스트 금지:
-{{"improvements": [{{"analysis": "데이터에서 관찰한 사실", "diagnosis": "원인 진단", "proposal": "구체적 변경 제안 (파일/파라미터 수준)"}}]}}"""
+{{"improvements": [{{"title": "한 줄 제목 (30자 이내, 경로·함수명 금지)", "analysis": "데이터에서 관찰한 사실", "diagnosis": "원인 진단", "proposal": "구체적 변경 제안 (파일/파라미터 수준)", "risk": "승인하지 않으면 남는 위험", "tradeoff": "승인했을 때의 단점·부작용·되돌리기 비용"}}]}}"""
 
 
 def validate_improvements(raw: str) -> tuple[tuple[ImproveDraft, ...], tuple[str, ...]]:
@@ -65,14 +74,20 @@ def validate_improvements(raw: str) -> tuple[tuple[ImproveDraft, ...], tuple[str
         return (), (f"improvements must be a list of <= {MAX_IMPROVEMENTS}",)
     drafts, errors = [], []
     for i, it in enumerate(items):
-        if not isinstance(it, dict) or set(it.keys()) != {"analysis", "diagnosis", "proposal"}:
-            errors.append(f"improvements[{i}]: keys must be analysis/diagnosis/proposal")
+        required = {"analysis", "diagnosis", "proposal"}
+        optional = {"title", "risk", "tradeoff"}
+        if not isinstance(it, dict) or not required <= set(it.keys()) or set(it.keys()) - (required | optional):
+            errors.append(f"improvements[{i}]: keys must be analysis/diagnosis/proposal (+title/risk/tradeoff)")
             continue
         vals = [it["analysis"], it["diagnosis"], it["proposal"]]
         if not all(isinstance(v, str) and 1 <= len(v) <= MAX_FIELD_LEN for v in vals):
             errors.append(f"improvements[{i}]: fields must be non-empty strings <= {MAX_FIELD_LEN}")
             continue
-        drafts.append(ImproveDraft(*vals))
+        extras = {k: it.get(k, "") for k in optional}
+        if not all(isinstance(v, str) and len(v) <= MAX_FIELD_LEN for v in extras.values()):
+            errors.append(f"improvements[{i}]: title/risk/tradeoff must be strings <= {MAX_FIELD_LEN}")
+            continue
+        drafts.append(ImproveDraft(*vals, **extras))
     return tuple(drafts), tuple(errors)
 
 
@@ -151,6 +166,7 @@ def implement_and_submit(
     return queue.submit(
         draft.analysis, draft.diagnosis,
         f"{draft.proposal}\n\n[코다리 구현 요약] {summary}", diff,
+        title=draft.title, risk=draft.risk, tradeoff=draft.tradeoff,
     )
 
 

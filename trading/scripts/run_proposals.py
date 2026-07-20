@@ -56,9 +56,47 @@ def resolve(queue: ProposalQueue, arg: str) -> ProposalCard | None:
     return hits[0] if len(hits) == 1 else None
 
 
+FORBIDDEN = ("trading/autotrader/safety/", "trading/autotrader/gates/",
+             "trading/autotrader/config.py")
+
+
+def diff_facts(diff: str) -> dict:
+    """diff 에서 사람이 판단에 쓸 사실만 결정적으로 뽑는다 (LLM 주장 아님)."""
+    files, added, removed = [], 0, 0
+    for line in (diff or "").splitlines():
+        if line.startswith("diff --git a/"):
+            files.append(line.split(" b/")[-1].strip())
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {
+        "files": files,
+        "added": added,
+        "removed": removed,
+        "tests": [f for f in files if "/tests/" in f or f.endswith("_test.py")],
+        "forbidden": [f for f in files if any(f.startswith(z) for z in FORBIDDEN)],
+    }
+
+
+def headline(card: ProposalCard) -> str:
+    """제안문 첫 문장을 제목처럼 쓴다. 원문은 잘린 코드 경로로 시작해 읽기 어렵다."""
+    if card.title.strip():
+        return card.title.strip()[:90]
+    text = " ".join((card.proposal or "").split())
+    if not text:
+        return "(내용 없음)"
+    for stop in ("다. ", "한다. ", "정정: ", ". "):
+        if stop in text[:200]:
+            return text[: text.index(stop) + len(stop)].strip()[:90]
+    return text[:90]
+
+
 def short(card: ProposalCard) -> str:
-    head = (card.proposal or "").splitlines()[0] if card.proposal else "(내용 없음)"
-    return f"{card.id[-6:]}  [{card.status}]  {head[:70]}"
+    f = diff_facts(card.diff)
+    scope = f"파일 {len(f['files'])}개 +{f['added']}/-{f['removed']}"
+    flag = " ⚠️금지구역" if f["forbidden"] else (" ✅테스트포함" if f["tests"] else "")
+    return f"{card.id[-6:]}  {headline(card)}\n        {scope}{flag}"
 
 
 def cmd_list(queue: ProposalQueue) -> int:
@@ -66,34 +104,79 @@ def cmd_list(queue: ProposalQueue) -> int:
     if not cards:
         print("심사 대기 카드 없음.")
         return 0
-    print(f"심사 대기 {len(cards)}건:")
-    for c in cards:
-        print("  " + short(c))
+    print(f"📋 심사 대기 {len(cards)}건 — 전략을 바꾸는 결정은 여기서만 이뤄집니다\n")
+    for i, c in enumerate(cards, 1):
+        f = diff_facts(c.diff)
+        flag = "⚠️ 금지구역" if f["forbidden"] else ("테스트 포함" if f["tests"] else "테스트 없음")
+        print(f"{i}) [{c.id[-6:]}] {headline(c)}")
+        print(f"     범위: {len(f['files'])}개 파일 · +{f['added']}/-{f['removed']}줄 · {flag}")
         if c.revisions:
-            print(f"        (수정 왕복 {len(c.revisions)}회, 마지막: {c.revisions[-1][:60]})")
-    print("\n자세히: show <id> / 승인: approve <id> / 거부: reject <id> \"사유\"")
+            print(f"     수정 왕복 {len(c.revisions)}회 — 마지막: {c.revisions[-1][:60]}")
+        print()
+    print("자세히: `show <id>`  (id 는 뒤 6자리)")
+    print("승인 `approve <id>` / 거부 `reject <id> \"사유\"` / 수정요청 `revise <id> \"지시\"`")
     return 0
 
 
-def cmd_show(queue: ProposalQueue, arg: str) -> int:
+def _wrap(text: str, width: int = 300) -> str:
+    """긴 단락을 앞부분만. 폰에서 스크롤 지옥이 되지 않게."""
+    t = " ".join((text or "").split())
+    return t if len(t) <= width else t[:width].rstrip() + " …"
+
+
+def cmd_show(queue: ProposalQueue, arg: str, full: bool = False) -> int:
     card = resolve(queue, arg)
     if card is None:
         print(f"카드를 찾지 못했습니다: {arg}")
         return cmd_list(queue) or 2
-    print(f"[{card.id}]  상태: {card.status}   생성: {card.created[:19]}")
-    print("=" * 70)
-    print("## 분석\n" + (card.analysis or "(없음)"))
-    print("\n## 진단\n" + (card.diagnosis or "(없음)"))
-    print("\n## 제안\n" + (card.proposal or "(없음)"))
+    f = diff_facts(card.diff)
+
+    print(f"📋 카드 {card.id[-6:]}   [{card.status}]")
+    print(f"   {headline(card)}")
+    print("=" * 64)
+    print("■ 무엇이 문제인가")
+    print(f"  {_wrap(card.diagnosis)}")
+    print("\n■ 어떻게 바꾸나")
+    print(f"  {_wrap(card.proposal, 400)}")
+    print("\n■ 근거가 된 관찰")
+    print(f"  {_wrap(card.analysis)}")
+
+    if card.risk.strip():
+        print("\n■ 승인하지 않으면 남는 위험")
+        print(f"  {_wrap(card.risk)}")
+    if card.tradeoff.strip():
+        print("\n■ 승인했을 때의 단점")
+        print(f"  {_wrap(card.tradeoff)}")
+    if not (card.risk.strip() or card.tradeoff.strip()):
+        print("\n■ 위험·단점: 이 카드에는 기록되지 않음 (구버전 카드)")
+
+    print("\n■ 변경 범위 (diff 에서 직접 계산 — 모델 주장 아님)")
+    for path in f["files"]:
+        print(f"  · {path}")
+    print(f"  총 +{f['added']}줄 / -{f['removed']}줄")
+    print(f"  테스트 포함: {'예 (' + ', '.join(f['tests']) + ')' if f['tests'] else '아니오'}")
+    print(f"  편집 금지 구역: {'⚠️ ' + ', '.join(f['forbidden']) if f['forbidden'] else '없음'}")
+
+    print("\n■ 승인하면 벌어지는 일")
+    print("  금지구역 재검사 → git apply → 전체 테스트 실행")
+    print("  테스트 실패 시 자동 롤백(git apply -R). 통과해야만 반영이 유지된다.")
+    print("  되돌리려면: git revert 또는 반대 diff 카드로 재제출.")
+
     if card.revisions:
-        print("\n## 수정 이력")
+        print("\n■ 수정 이력")
         for i, r in enumerate(card.revisions, 1):
-            print(f"  {i}. {r}")
+            print(f"  {i}. {_wrap(r, 150)}")
     if card.error:
-        print(f"\n## 마지막 오류\n{card.error}")
+        print(f"\n■ 마지막 오류\n  {_wrap(card.error, 200)}")
+
     diff = card.diff or ""
-    print(f"\n## diff ({len(diff.splitlines())}줄)")
-    print(diff[:4000] + ("\n... (생략)" if len(diff) > 4000 else ""))
+    if full:
+        print(f"\n■ diff 전문 ({len(diff.splitlines())}줄)")
+        print(diff)
+    else:
+        print(f"\n■ diff {len(diff.splitlines())}줄 — 전문은 `show {card.id[-6:]} --full`")
+    print(f"\n승인: approve {card.id[-6:]}   거부: reject {card.id[-6:]} \"사유\"")
+    print(f"수정 요청: revise {card.id[-6:]} \"이렇게 고쳐줘\"")
     return 0
 
 
@@ -127,6 +210,7 @@ def main() -> int:
     p.add_argument("cmd", choices=["list", "show", "approve", "reject", "revise"])
     p.add_argument("id", nargs="?", default="")
     p.add_argument("text", nargs="*", help="reject 사유 / revise 지시")
+    p.add_argument("--full", action="store_true", help="show: diff 전문 출력")
     args = p.parse_args()
 
     queue = make_queue()
@@ -136,7 +220,7 @@ def main() -> int:
         print(f"{args.cmd} 에는 카드 id 가 필요합니다.")
         return cmd_list(queue) or 2
     if args.cmd == "show":
-        return cmd_show(queue, args.id)
+        return cmd_show(queue, args.id, full=args.full)
     return cmd_action(queue, args.cmd, args.id, " ".join(args.text).strip())
 
 

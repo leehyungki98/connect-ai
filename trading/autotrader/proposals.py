@@ -45,6 +45,10 @@ class ProposalCard:
     diff: str                    # unified diff (git 형식)
     revisions: tuple[str, ...] = ()   # 수정 지시/실패 사유 이력 (왕복 상한 대상)
     error: str = ""
+    # 사용자가 코드를 안 보고 판단하기 위한 필드. 구버전 카드엔 없어 기본값을 둔다.
+    title: str = ""
+    risk: str = ""
+    tradeoff: str = ""
 
 
 @dataclass(frozen=True)
@@ -124,13 +128,15 @@ class ProposalQueue:
 
     # --- 제출 ---
 
-    def submit(self, analysis: str, diagnosis: str, proposal: str, diff: str) -> ActionResult:
+    def submit(self, analysis: str, diagnosis: str, proposal: str, diff: str,
+               title: str = "", risk: str = "", tradeoff: str = "") -> ActionResult:
         now = datetime.now(timezone.utc)
         card = ProposalCard(
             id=now.strftime("%Y%m%d-%H%M%S-%f"),
             created=now.isoformat(),
             status="pending",
             analysis=analysis, diagnosis=diagnosis, proposal=proposal, diff=diff,
+            title=title, risk=risk, tradeoff=tradeoff,
         )
         if not all(x.strip() for x in (analysis, diagnosis, proposal, diff)):
             card = replace(card, status="rejected", error="카드 필드 누락 (분석/진단/제안/diff 필수)")
