@@ -705,6 +705,12 @@ function _isLMStudioEngine(ollamaBase: string): boolean {
     return ollamaBase.includes('1234') || ollamaBase.includes('v1');
 }
 
+/* 실행이 긴 트레이딩 도구 — KRX 수집 + 브레인 2단계라 기본 90초 안에 안 끝난다.
+   호출 사이트에서 타임아웃을 늘려 잡는 데 쓴다. */
+const _LONG_RUNNING_TOOLS = new Set([
+    'premarket_run.py', 'backtest_run.py', 'improve_run.py', 'postmarket_review.py',
+]);
+
 /* Gemini는 OpenAI 호환 엔드포인트를 제공한다. 기존 LM Studio 분기가 이미
    /chat/completions + SSE 스트리밍이라 요청·응답 모양이 그대로 맞는다.
    그래서 새 분기를 만들지 않고 주소와 인증 헤더만 갈아끼운다.
@@ -19705,6 +19711,13 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 tool: 'my_videos_check.py',
                 domainPattern: /(?:유튜브|youtube|채널|구독자|조회수|시청자|시청\s*시간|내\s*영상|내\s*비디오|video\s*count|subscriber)/i,
             },
+            /* 매매 현황 질문은 읽기 전용 도구로 보낸다. 이게 없으면 분류기가
+               premarket_run 을 골라서 "오늘 뭐 샀어?"에 실제 주문을 내러 간다. */
+            {
+                agentId: 'secretary',
+                tool: 'trading_status.py',
+                domainPattern: /(?:매매|매수|매도|샀|팔았|보유|잔고|체결|포지션|손절|쿨다운|승인\s*대기|오늘.*(?:투자|거래))/i,
+            },
         ];
         /* 창작·기획 동사 — 이게 있으면 분석이 아니라 multi-agent 작업 (CEO 플래너로) */
         const creativePattern = /(?:만들|기획|디자인|썸네일\s*제작|썸네일\s*만들|스크립트\s*써|글\s*써|작성해|코딩|개발|제작|design|create|build|make|write|generate|plan)/i;
@@ -19777,9 +19790,13 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         post({ type: 'agentStart', agent: entry.agentId, task: `${entry.tool} 데이터 수집` });
         post({ type: 'response', value: `🔧 ${a.emoji} ${a.name}: \`${entry.tool}\` 실행 중...` });
         let r: { exitCode: number; output: string; timedOut: boolean };
+        /* 트레이딩 도구는 KRX 유니버스 수집 + 브레인 2단계(codex→claude)라 실측
+           2분, 최악 10분대다. 90초는 정상 실행이 죽는 값이었다. 나머지 도구는
+           빨라야 채팅이 안 멈추므로 90초를 유지한다. */
+        const toolTimeoutMs = _LONG_RUNNING_TOOLS.has(entry.tool) ? 900000 : 90000;
         try {
             /* v2.89.50 — stdout만 캡쳐. stderr (진행 메시지·DeprecationWarning) 채팅에 안 끼게. */
-            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, 90000, 'stdout');
+            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, toolTimeoutMs, 'stdout');
         } catch (e: any) {
             post({ type: 'agentEnd', agent: entry.agentId });
             post({ type: 'error', value: `⚠️ 도구 실행 에러: ${e?.message || e}` });
@@ -19789,7 +19806,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
 
         const toolOut = (r.output || '').trim();
         const toolOk = r.exitCode === 0 && toolOut.length > 0;
-        const toolStatus = r.timedOut ? '⏱️ 90초 초과' : (toolOk ? '✅' : `❌ exit ${r.exitCode}`);
+        const toolStatus = r.timedOut ? `⏱️ ${Math.round(toolTimeoutMs / 1000)}초 초과` : (toolOk ? '✅' : `❌ exit ${r.exitCode}`);
 
         if (!toolOk) {
             const pyMissing = _isPythonMissing(r.exitCode, toolOut);
