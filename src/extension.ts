@@ -2132,8 +2132,8 @@ async function handleTelegramCommand(text: string): Promise<void> {
     /* 변경 제안 카드 심사 — 유일한 사용자 승인 지점.
        LLM 을 거치지 않고 결정적으로 처리한다. 매매 전략을 바꾸는 결정이라
        비서가 자연어로 해석하다 오작동하면 안 된다. */
-    if (cmd === '/cards' || cmd === '/approve' || cmd === '/reject' || cmd === '/revise') {
-        const sub = cmd === '/cards' ? 'list' : cmd.slice(1);
+    if (cmd === '/cards' || cmd === '/card' || cmd === '/approve' || cmd === '/reject' || cmd === '/revise') {
+        const sub = cmd === '/cards' ? 'list' : (cmd === '/card' ? 'show' : cmd.slice(1));
         const parts = rest.split(/\s+/).filter(Boolean);
         const cardId = sub === 'list' ? '' : (parts.shift() || '');
         const note = parts.join(' ').trim();
@@ -2383,8 +2383,9 @@ function _buildCapabilityReport(): string {
     lines.push(agentSummary.join('\n'));
     lines.push('');
     lines.push('*📋 제안 카드 심사* (전략 변경은 여기서만)');
-    lines.push('  `/cards` 대기 목록 · `/approve <id>` 승인');
-    lines.push('  `/reject <id> 사유` · `/revise <id> 지시`');
+    lines.push('  `/cards` 대기 목록 · `/card <id>` 상세 보기');
+    lines.push('  `/approve <id>` 승인 · `/reject <id> 사유`');
+    lines.push('  `/revise <id> 지시` 수정 요청');
     lines.push('  _id 는 뒤 6자리만 입력해도 됩니다._');
     lines.push('');
     lines.push('*예시:*');

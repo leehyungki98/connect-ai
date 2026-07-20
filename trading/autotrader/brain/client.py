@@ -75,7 +75,11 @@ def build_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str:
 
 아래 JSON 형식으로만 응답하라. JSON 외 텍스트 금지:
 {{"decisions": [{{"symbol": "6자리코드", "action": "enter|skip", "entry_price": 정수, "stop_price": 정수, "target_price": 정수, "horizon_days": 정수, "reason": "근거"}}], "exits": [{{"symbol": "6자리코드", "reason": "근거"}}]}}
-skip이면 가격/기간 필드는 null 또는 생략."""
+skip이면 가격/기간 필드는 null 또는 생략.
+
+⚠️ 위에 명시된 키 외에는 **단 하나도 추가하지 마라**. 주석용 키("_" 등),
+수량(qty), 신뢰도, 메모 전부 금지다. 검증기가 여분 키를 발견하면 제안
+전체를 기각하므로 그날 매매가 통째로 사라진다."""
 
 
 def extract_json(text: str) -> str:
