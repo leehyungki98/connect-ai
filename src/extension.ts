@@ -7992,6 +7992,79 @@ function _tradingGateCardHtml(): string {
   </section>`;
 }
 
+/** 스윙팀 오늘의 선정 — trading/state/premarket_log.jsonl 읽기 전용.
+ *  시장 폭 게이트·2슬롯·최근 이력을 시각화. "왜 매매 안해?"를 카드로 답한다.
+ *  trading/ 코드 무접촉 (state 파일만 읽음). */
+function _swingSelectionCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    let recs: any[] = [];
+    try {
+        const p = _tradingStatePath('premarket_log.jsonl');
+        if (p && fs.existsSync(p)) {
+            const byDate: Record<string, any> = {};
+            for (const ln of fs.readFileSync(p, 'utf-8').trim().split('\n')) {
+                if (!ln.trim()) continue;
+                try { const r = JSON.parse(ln); if (r.date) byDate[r.date] = r; } catch { /* skip */ }
+            }
+            recs = Object.values(byDate).sort((a: any, b: any) => a.date < b.date ? 1 : -1);
+        }
+    } catch { /* 표시 전용 */ }
+    const breadthOf = (r: any): number | null => {
+        for (const s of (r?.skipped || [])) { const m = String(s).match(/폭\s*(\d+)%/); if (m) return parseInt(m[1], 10); }
+        return null;
+    };
+    const kind = (r: any) => {
+        if (!r) return { t: '미실행', c: '#667788' };
+        if (r.blocked) return { t: '차단', c: '#e5484d' };
+        if ((r.buys_placed || []).length) return { t: '진입', c: '#22c55e' };
+        const b = breadthOf(r); if (b !== null && b < 50) return { t: '폭차단', c: '#f59e0b' };
+        return { t: '관망', c: '#94a3b8' };
+    };
+    const today = recs[0];
+    const k = kind(today);
+    const b = today ? breadthOf(today) : null;
+    let statusLine = '프리마켓 미실행 (오늘 08:30 예약)';
+    if (today) {
+        if (today.blocked) statusLine = `전체 차단 · ${esc(today.blocked)}`;
+        else if ((today.buys_placed || []).length) statusLine = `진입 ${today.buys_placed.length}종목`;
+        else if (b !== null && b < 50) statusLine = `시장 폭 ${b}% &lt; 50% · 신규 진입 차단 (C2)`;
+        else statusLine = '관망 (게이트 통과, 진입 0종목)';
+    }
+    const buys: string[] = (today?.buys_placed) || [];
+    const blocked = (b !== null && b < 50) || !!today?.blocked;
+    const slots = [0, 1].map(i => {
+        if (buys[i]) return `<div style="flex:1;padding:8px;border-radius:8px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.35);font-size:12px;font-weight:600">${esc(buys[i])}</div>`;
+        return `<div style="flex:1;padding:8px;border-radius:8px;background:rgba(128,128,128,.06);border:1px dashed rgba(128,128,128,.25);font-size:12px;opacity:.5;text-align:center">${blocked ? '차단' : '빈 슬롯'}</div>`;
+    }).join('');
+    let gauge = '';
+    if (b !== null) {
+        const open = b >= 50; const col = open ? '#22c55e' : '#f59e0b';
+        gauge = `<div style="margin:12px 0 4px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-bottom:3px"><span>시장 폭</span><span>${b}% ${open ? '(진입 가능)' : '&lt; 50% 차단'}</span></div>
+          <div style="position:relative;height:8px;background:rgba(128,128,128,.15);border-radius:4px">
+            <div style="position:absolute;left:0;top:0;height:8px;width:${Math.min(100, b)}%;background:${col};border-radius:4px"></div>
+            <div style="position:absolute;left:50%;top:-3px;height:14px;width:2px;background:#e5484d" title="문턱 50%"></div>
+          </div></div>`;
+    }
+    const strip = recs.slice(0, 14).reverse().map((r: any) => {
+        const kk = kind(r); const md = String(r.date).slice(5).replace('-', '/');
+        return `<div title="${esc(r.date)} · ${kk.t}" style="flex:1;min-width:0;text-align:center">
+          <div style="height:18px;border-radius:3px;background:${kk.c};opacity:.85"></div>
+          <div style="font-size:9px;opacity:.4;margin-top:2px">${md}</div></div>`;
+    }).join('');
+    const stripBlock = strip ? `<div style="margin-top:14px"><div style="font-size:11px;opacity:.55;margin-bottom:5px">최근 이력 (녹색 진입 · 주황 폭차단 · 빨강 차단 · 회색 관망)</div><div style="display:flex;gap:3px">${strip}</div></div>` : '';
+    return `<section class="card span-7" id="swingSelectionCard">
+    <div class="card-head"><div class="card-title"><span class="title-icon">🎯</span> 스윙팀 오늘의 선정</div>
+    <span class="badge" style="background:${k.c}22;color:${k.c}">${k.t}</span></div>
+    <div style="font-size:13px;margin-bottom:2px">${statusLine}</div>
+    <div style="font-size:11px;opacity:.5">일 신규 진입 상한 2종목${today ? ' · ' + esc(today.date) + ' 기준' : ''}</div>
+    ${gauge}
+    <div style="display:flex;gap:8px;margin-top:10px">${slots}</div>
+    ${stripBlock}
+  </section>`;
+}
+
 function _tradingProposalsCardHtml(): string {
     /* 변경 제안 큐 (trading/state/proposals/pending/*.json — Python 큐가 생성).
        조회 전용 — 승인/거부는 큐 CLI 또는 에이전트 지시로 수행 (유일한 승인 지점). */
@@ -12165,6 +12238,8 @@ class CompanyDashboardPanel {
   ${_tradingPositionsCardHtml()}
 
   ${_usLongtermPositionsCardHtml()}
+
+  ${_swingSelectionCardHtml()}
 
   ${_tradingProposalsCardHtml()}
 
