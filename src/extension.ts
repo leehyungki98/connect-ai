@@ -2129,6 +2129,41 @@ async function handleTelegramCommand(text: string): Promise<void> {
         await sendTelegramReport(`${cmd === '/done' ? '✅' : '✖️'} \`${match.id.slice(-9)}\` ${match.title}\n→ ${newStatus === 'done' ? '완료' : '취소'} 처리됨.`);
         return;
     }
+    /* 변경 제안 카드 심사 — 유일한 사용자 승인 지점.
+       LLM 을 거치지 않고 결정적으로 처리한다. 매매 전략을 바꾸는 결정이라
+       비서가 자연어로 해석하다 오작동하면 안 된다. */
+    if (cmd === '/cards' || cmd === '/approve' || cmd === '/reject' || cmd === '/revise') {
+        const sub = cmd === '/cards' ? 'list' : cmd.slice(1);
+        const parts = rest.split(/\s+/).filter(Boolean);
+        const cardId = sub === 'list' ? '' : (parts.shift() || '');
+        const note = parts.join(' ').trim();
+        if (sub !== 'list' && !cardId) {
+            await sendTelegramReport(
+                `사용법: \`${cmd} <id>\`${sub === 'reject' || sub === 'revise' ? ' <사유/지시>' : ''}\n` +
+                `대기 목록은 \`/cards\` 로 확인하세요. id 는 뒤 6자리만 입력해도 됩니다.`);
+            return;
+        }
+        if ((sub === 'reject' || sub === 'revise') && !note) {
+            await sendTelegramReport(`\`${cmd}\` 에는 ${sub === 'reject' ? '거부 사유' : '수정 지시'}가 필요해요.`);
+            return;
+        }
+        const tradingRoot = _resolveTradingRoot();
+        if (!tradingRoot) {
+            await sendTelegramReport('⚠️ trading 폴더를 찾지 못했어요.');
+            return;
+        }
+        const argv = ['scripts/run_proposals.py', sub, cardId, ...(note ? [note] : [])].filter(Boolean);
+        if (sub === 'approve') {
+            await sendTelegramReport(`⏳ \`${cardId}\` 승인 게이트 실행 중 — 금지구역 검사 → diff 적용 → 전체 테스트. 잠시만요.`);
+        }
+        const r = await runCommandCaptured(
+            `${_pythonCmd()} ${argv.map(a => JSON.stringify(a)).join(' ')}`,
+            tradingRoot, () => {}, 900000, 'both', { PYTHONIOENCODING: 'utf-8' },
+        );
+        const out = (r.output || '').trim() || '(출력 없음)';
+        await sendTelegramLong(`📋 *제안 카드* — \`${cmd}\`\n\n\`\`\`\n${out.slice(0, 3000)}\n\`\`\``);
+        return;
+    }
     /* P1-8: edit commands — let the user retarget tasks without re-creating.
        Loose date parser (ISO, "내일", "오늘 15:00", "+2h") covers the
        common cases without dragging in a date library. */
@@ -2346,6 +2381,11 @@ function _buildCapabilityReport(): string {
     agentSummary.push('  💻 *코다리* — ✅ 승인된 개선안 코드 구현·테스트');
     agentSummary.push('  📊 *현빈* — ✅ 사후분석·실패 패턴·샤프/MDD 관찰');
     lines.push(agentSummary.join('\n'));
+    lines.push('');
+    lines.push('*📋 제안 카드 심사* (전략 변경은 여기서만)');
+    lines.push('  `/cards` 대기 목록 · `/approve <id>` 승인');
+    lines.push('  `/reject <id> 사유` · `/revise <id> 지시`');
+    lines.push('  _id 는 뒤 6자리만 입력해도 됩니다._');
     lines.push('');
     lines.push('*예시:*');
     lines.push('• "오늘 성과 어때?" → 현빈이 사후분석');
