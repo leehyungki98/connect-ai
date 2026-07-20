@@ -5,6 +5,7 @@
 제출된 카드는 사용자가 심사한다 — 자동 승인 없음.
 """
 import argparse
+import json
 import subprocess
 import sys
 from datetime import date
@@ -21,6 +22,9 @@ for _s in (sys.stdout, sys.stderr):
 from autotrader.config import STATE_DIR
 from autotrader.improve import run_improve_cycle
 from autotrader.proposals import ProposalQueue
+
+# 주간 사이클이므로 한 주 거래일만큼은 쌓여야 분석할 게 생긴다.
+MIN_DAYS_FOR_IMPROVE = 5
 
 
 def build_perf_summary(state_dir: Path, max_lines: int = 14,
@@ -79,7 +83,24 @@ def main():
     p.add_argument("--proposer", default="codex", choices=["codex", "claude"])
     p.add_argument("--coder", default="opus", choices=["opus", "claude"])
     p.add_argument("--no-commit", action="store_true", help="ledger 백업 커밋 생략")
+    p.add_argument("--force", action="store_true", help="운용 기록이 얇아도 강제 실행")
     args = p.parse_args()
+
+    # 재료가 얇으면 선정자가 분석 대신 자기 역할 소개문을 뱉고, 코다리는
+    # 구현할 게 없다며 거부한다 (2026-07-20 실측). LLM 두 번 부르고 쓰레기
+    # 카드가 남을 뿐이라 아예 시작하지 않는다.
+    pm = STATE_DIR / "premarket_log.jsonl"
+    days = set()
+    if pm.exists():
+        for line in pm.read_text(encoding="utf-8").splitlines():
+            try:
+                days.add(json.loads(line)["date"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    if len(days) < MIN_DAYS_FOR_IMPROVE and not args.force:
+        print(f"[improve] 운용 기록 {len(days)}일 — {MIN_DAYS_FOR_IMPROVE}일 미만이라 건너뜁니다.")
+        print("[improve] 재료가 쌓인 뒤 제안하는 게 맞습니다. 강제하려면 --force.")
+        return 0
 
     summary = build_perf_summary(STATE_DIR, ledger_dir=ROOT / "ledger")
     queue = ProposalQueue(

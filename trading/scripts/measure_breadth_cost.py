@@ -46,6 +46,12 @@ def load_bars(cache: Path) -> dict[str, list[tuple[str, int]]]:
     return out
 
 
+def load_ohlc(cache: Path) -> dict[str, list[list]]:
+    """{종목: [[날짜,시,고,저,종,거래량], ...]} — 손절 판정에 고가·저가가 필요하다."""
+    raw = json.loads(cache.read_text(encoding="utf-8"))["bars"]
+    return {sym: sorted(rows, key=lambda r: r[0]) for sym, rows in raw.items()}
+
+
 def breadth_at(bars: dict, idx: dict, di: int) -> float | None:
     """유니버스 중 20일 이평 위 비율. pipeline._market_breadth 와 같은 정의."""
     above = eligible = 0
@@ -94,6 +100,8 @@ def main() -> int:
     p.add_argument("--horizon", type=int, default=10, help="보유 거래일 수")
     p.add_argument("--breadth", type=float, default=0.5, help="차단 임계값")
     p.add_argument("--top-n", type=int, default=10)
+    p.add_argument("--stop", type=float, default=0.05, help="손절 폭")
+    p.add_argument("--target", type=float, default=0.10, help="목표가 폭")
     args = p.parse_args()
 
     cache = STATE_DIR / "bars_cache.json"
@@ -101,6 +109,7 @@ def main() -> int:
         print(f"[X] {cache} 없음. 먼저 백테스트 캐시를 만들어주세요.")
         return 2
     bars = load_bars(cache)
+    ohlc = load_ohlc(cache)
     all_dates = sorted({d for s in bars.values() for d, _ in s})
     # 종목별 {날짜인덱스: 시계열 위치}
     date_pos = {d: k for k, d in enumerate(all_dates)}
@@ -127,6 +136,7 @@ def main() -> int:
             continue
         rets = []
         top1 = None
+        top1_managed = None
         for k, r in enumerate(picks):
             i = idx[r.symbol].get(di)
             fr = forward_return(bars[r.symbol], i, args.horizon)
@@ -135,9 +145,11 @@ def main() -> int:
             rets.append(fr)
             if k == 0:
                 top1 = fr  # 1순위만 담는 "조건부 예외" 가정
+                top1_managed = managed_return(ohlc[r.symbol], i, args.horizon,
+                                              args.stop, args.target)
         if not rets:
             continue
-        row = (d, b, statistics.mean(rets), top1)
+        row = (d, b, statistics.mean(rets), top1, top1_managed)
         if b < args.breadth:
             blocked.append(row)
             cur += 1
@@ -172,9 +184,12 @@ def main() -> int:
     print("=" * 62)
     print("[조건부 예외 가정] 차단된 날에 1순위 1종목만 담았다면")
     print("-" * 62)
-    summarize(blocked, "차단일 · 1순위만", col=3)
+    summarize(blocked, "차단일 · 1순위만 (손절 미적용)", col=3)
     print()
-    summarize(opened, "열린날 · 1순위만", col=3)
+    print(f"[손절 {args.stop:.0%} · 목표 {args.target:.0%} 적용 — 전략이 실제로 겪는 값]")
+    summarize(blocked, "차단일 · 1순위 + 리스크관리", col=4)
+    print()
+    summarize(opened, "열린날 · 1순위 + 리스크관리", col=4)
     print()
     print(f"  최장 연속 차단: {streak}일 (마지막 {max_streak_end})")
     if blocked and opened:
