@@ -67,6 +67,63 @@ class TestMatchRelevance:
         assert "META" in result
 
 
+class TestCoverageUniverse:
+    """보유만이 아니라 관찰·후보군까지 넓게 잡는다 (미래 리밸런싱 대비)."""
+
+    def test_watchlist_ticker_matched(self):
+        """관찰 종목 PLTR 도 잡힌다 — 지금 보유 아니어도."""
+        r = intel_sources.match_relevance("Palantir wins new defense contract", "")
+        assert "PLTR" in r
+
+    def test_candidate_peer_matched(self):
+        """후보군(AMD)도 잡힌다 — 미래 편입 후보."""
+        r = intel_sources.match_relevance("AMD earnings beat on data center demand", "")
+        assert "AMD" in r
+
+    def test_megacap_candidate_matched(self):
+        r = intel_sources.match_relevance("Microsoft cloud revenue accelerates", "")
+        assert "MSFT" in r
+
+    def test_tier_classification(self):
+        assert intel_sources.classify_tier("NVDA") == "held"
+        assert intel_sources.classify_tier("PLTR") == "watchlist"
+        assert intel_sources.classify_tier("TSLA") == "watchlist"
+        assert intel_sources.classify_tier("AMD") == "candidate"
+        assert intel_sources.classify_tier("MACRO") == "macro"
+
+    def test_universe_covers_config_held_and_watchlist(self):
+        """드리프트 가드 — config 의 보유·관찰 종목은 반드시 UNIVERSE 에 있어야.
+        보유를 config 에 추가하고 여기 별칭을 안 넣으면 이 테스트가 잡는다."""
+        from longcore.config import BUCKETS, SNAPSHOT_WATCHLIST
+        held = set()
+        for cfg in BUCKETS.values():
+            held |= set(cfg.get("sleeves", {}).get("GROWTH", {}))
+        watch = {t for t in SNAPSHOT_WATCHLIST if t not in ("SPY", "VOO")}
+        for t in held | watch:
+            assert t in intel_sources.UNIVERSE, f"{t} 가 UNIVERSE 에 없음"
+
+
+class TestWordBoundary:
+    """부분 문자열 오탐 방지 — 후보군을 넓히면 짧은 별칭이 위험해진다."""
+
+    def test_now_not_matched_in_common_word(self):
+        """'right now' 의 now 가 ServiceNow(NOW) 로 오탐되면 안 됨."""
+        r = intel_sources.match_relevance("Investors wait right now for the Fed", "")
+        assert "NOW" not in r
+
+    def test_arm_not_matched_in_warm(self):
+        r = intel_sources.match_relevance("Warm weather boosts retail sales", "")
+        assert "ARM" not in r
+
+    def test_amd_not_matched_in_named(self):
+        r = intel_sources.match_relevance("The board named a new chief executive", "")
+        assert "AMD" not in r
+
+    def test_ai_not_matched_in_said(self):
+        r = intel_sources.match_relevance("The analyst said markets look calm", "")
+        assert "MACRO" not in r      # 'ai' 가 'said' 에서 오탐되면 안 됨
+
+
 class TestToStagingRecord:
     """RSS 정규화."""
 
