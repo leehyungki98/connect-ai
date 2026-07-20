@@ -22,6 +22,9 @@ C2 채택 파라미터 (2026-07-19, 2년 백테스트 검증 — MDD 4/4 구간 
 당일 매도(손절 등)한 종목은 같은 실행에서 재진입 금지.
 상태 파일 손상 시: 안전 관련(day_start/holdings)은 fail-closed(전체 차단),
 쿨다운은 보호 장치가 아닌 제한 장치이므로 손상 시 빈 상태로 진행하되 경고 기록.
+
+멱등성: order_ledger_file 을 주면 date-symbol-side 단위로 주문을 기록하고,
+같은 거래일 재실행에서는 이미 시도된 주문을 다시 내지 않는다 (복구만).
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ from autotrader.brain.client import Candidate
 from autotrader.brain.two_stage import run_two_stage
 from autotrader.execution.fills import COMMISSION_PPM, _ceil_ppm
 from autotrader.execution.holdings import HoldingMeta, HoldingsStore, reconcile
+from autotrader.execution.order_ledger import LedgerCorrupted, OrderLedger
 from autotrader.execution.stop_monitor import check_exits
 from autotrader.execution.ticks import round_down_to_tick
 from autotrader.gates.compliance import PAPER_BASE_URL, PAPER_TR_IDS, OrderEndpoint, check_compliance
@@ -122,6 +126,7 @@ def run_premarket(
     proposer_runner: Callable | None = None,
     judge_runner: Callable | None = None,
     top_n: int = 10,
+    order_ledger_file: Path | None = None,
 ) -> RunReport:
     report = RunReport(date=today.isoformat())
 
@@ -148,6 +153,13 @@ def run_premarket(
     cooldowns, cd_warn = _load_cooldowns(cooldown_file)
     if cd_warn:
         report.skipped.append(cd_warn)
+
+    # 주문 멱등성 원장 — 손상 시 중복 여부를 알 수 없으므로 fail-closed
+    try:
+        ledger = OrderLedger(order_ledger_file, today)
+    except LedgerCorrupted as e:
+        report.blocked = f"order ledger corrupted (fail-closed): {e}"
+        return report
 
     # --- 3. 청산: 결정적 신호 + 브레인 exits ---
     prices = {h.symbol: kis.get_price(h.symbol) for h in holdings}
@@ -176,6 +188,13 @@ def run_premarket(
                 exit_queue.append((e.symbol, pf.positions[e.symbol].qty, "brain"))
 
     for sym, qty, kind in exit_queue:
+        prior = ledger.attempted(sym, "sell")
+        if prior is not None:  # 재실행: 신규 주문 없이 상태만 복구
+            report.skipped.append(f"{sym} sell({kind}): 당일 주문 기록 있음 — 재주문 생략")
+            sold.add(sym)
+            if prior.get("kind") == "stop":
+                cooldowns[sym] = (today + timedelta(days=COOLDOWN_CAL_DAYS)).isoformat()
+            continue
         price = prices.get(sym) or kis.get_price(sym)
         limit = round_down_to_tick(price * (100 - SELL_DISCOUNT_PCT) // 100)
         intent = OrderIntent("sell", sym, qty, limit)
@@ -184,7 +203,9 @@ def run_premarket(
                 report.skipped.append(f"{sym} sell({kind}): {gate_name} {reason}")
                 break
         else:
+            ledger.mark_sending(sym, "sell", qty=qty, price=limit, kind=kind)
             result = kis.place_order(intent, pf)
+            ledger.mark_result(sym, "sell", result.success, result.message)
             if result.success:
                 report.exits_placed.append(f"{sym} x{qty} ({kind}) @{limit}")
                 sold.add(sym)
@@ -207,6 +228,24 @@ def run_premarket(
         positions_view = dict(pf.positions)
         new_today = 0
         for d in ts.entries:
+            prior = ledger.attempted(d.symbol, "buy")
+            if prior is not None:  # 재실행: 신규 주문 없이 노출·메타만 복구
+                report.skipped.append(f"{d.symbol} buy: 당일 주문 기록 있음 — 재주문 생략")
+                new_today += 1  # 이미 낸 주문도 일별 상한에 든다
+                prior_qty = int(prior.get("qty", 0))
+                prior_cost = prior_qty * int(prior.get("price", 0))
+                cash_left -= prior_cost + _ceil_ppm(prior_cost, COMMISSION_PPM)
+                existing = positions_view.get(d.symbol)
+                positions_view[d.symbol] = Position(
+                    (existing.qty if existing else 0) + prior_qty,
+                    (existing.value_krw if existing else 0) + prior_cost,
+                )
+                if d.symbol not in metas and prior.get("stop") is not None:
+                    metas[d.symbol] = HoldingMeta(
+                        int(prior["stop"]), int(prior["target"]),
+                        int(prior["horizon"]), today.isoformat(),
+                    )
+                continue
             if new_today >= MAX_NEW_PER_DAY:
                 report.skipped.append(
                     f"{d.symbol} buy: 일별 신규 진입 상한({MAX_NEW_PER_DAY}) 도달"
@@ -246,7 +285,10 @@ def run_premarket(
                     break
             if rejected:
                 continue
+            ledger.mark_sending(d.symbol, "buy", qty=qty, price=entry, stop=stop,
+                                target=d.target_price, horizon=d.horizon_days)
             result = kis.place_order(intent, pf_view)
+            ledger.mark_result(d.symbol, "buy", result.success, result.message)
             if not result.success:
                 report.skipped.append(f"{d.symbol} buy: order failed {result.message}")
                 continue

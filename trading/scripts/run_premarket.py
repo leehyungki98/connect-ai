@@ -1,8 +1,10 @@
 """장 시작 전 1회 실행 (모의 전용).
 
-사용법: python scripts/run_premarket.py [--proposer codex|claude] [--judge claude|codex] [--dry-run] [--force]
+사용법: python scripts/run_premarket.py [--proposer codex|claude] [--judge claude|codex] [--dry-run] [--force] [--resume]
 --dry-run: 유니버스/스크리너 상위 후보만 출력하고 브레인·주문은 건너뜀.
 --force:   당일 재실행 가드를 무시하고 강제 실행.
+--resume:  중간에 실패한 실행의 이어하기. 당일 가드는 무시하되 이미 낸 주문은
+           주문 원장(state/premarket_run_lock.json)이 막는다 — 원장은 --force 에도 적용된다.
 필요: .env (KIS 키), pykrx (pip install pykrx), claude 또는 codex CLI 로그인.
 """
 import argparse
@@ -61,14 +63,16 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true",
                    help="당일 재실행 가드 무시")
+    p.add_argument("--resume", action="store_true",
+                   help="실패한 실행 이어하기 (이미 낸 주문은 원장이 막음)")
     args = p.parse_args()
 
     # 주문을 내는 실행만 막는다. --dry-run 은 주문이 없으므로 몇 번이든 허용.
-    if not args.dry_run and not args.force:
+    if not args.dry_run and not args.force and not args.resume:
         log_path = STATE_DIR / "premarket_log.jsonl"
         if already_ran_today(log_path, date.today()):
             print("[premarket] 오늘 이미 실행됨 — 중복 주문 방지로 건너뜁니다.")
-            print("[premarket] 다시 돌리려면 --force 를 붙이세요.")
+            print("[premarket] 이어하려면 --resume 을 붙이세요 (--force 도 원장은 적용).")
             return 0
 
     # pykrx용 KRX 로그인: .env의 KRX_ID/KRX_PW를 환경변수로 주입
@@ -102,6 +106,7 @@ def main():
         STATE_DIR / "day_start.json",
         STATE_DIR / "cooldowns.json",
         proposer_brain=args.proposer, judge_brain=args.judge,
+        order_ledger_file=STATE_DIR / "premarket_run_lock.json",
     )
 
     print(f"[premarket] blocked={report.blocked}")

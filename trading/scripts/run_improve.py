@@ -110,6 +110,7 @@ def main():
     r = run_improve_cycle(
         summary, queue,
         proposer_brain=args.proposer, coder_brain=args.coder,
+        repo_root=ROOT.parent,  # 코다리가 대상 파일 원문을 보고 diff 를 쓰게 한다
     )
     print(f"[improve] 개선안 {r['drafts']}건, 제출 {len(r['submitted'])}건, "
           f"자동거부 {len(r['rejected'])}건, 실패 {r['failed']}건")

@@ -244,7 +244,16 @@ class ProposalQueue:
 
     def _git_apply(self, diff: str, check_only: bool, reverse: bool = False) -> str | None:
         """성공 시 None, 실패 시 에러 문자열."""
-        args = ["git", "apply", "--whitespace=nowarn"]
+        # --recount: hunk 헤더의 줄 수를 믿지 않고 패치 내용에서 다시 센다.
+        # LLM 이 쓴 diff 는 @@ 줄 수를 자주 틀리는데, 그것만으로 거부하면
+        # 내용이 멀쩡한 카드도 버려진다. 무엇을 바꾸는지에 대한 검증(금지구역·
+        # 전체 테스트)은 그대로라 안전은 깎이지 않는다.
+        # --recount: hunk 헤더의 줄 수를 믿지 않고 패치 내용에서 다시 센다.
+        # --ignore-whitespace: 문맥 줄의 공백 차이를 무시한다. git 이 직접 만든
+        #   diff 조차 이 플래그 없이는 거부되는 경우가 있었다 (2026-07-20).
+        # 둘 다 "어디에 붙일지"만 느슨하게 할 뿐 "무엇을 바꾸는지"는 그대로다.
+        # 안전은 금지구역 검사와 전체 테스트가 지키므로 깎이지 않는다.
+        args = ["git", "apply", "--whitespace=nowarn", "--recount", "--ignore-whitespace"]
         if check_only:
             args.append("--check")
         if reverse:

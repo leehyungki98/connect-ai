@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from autotrader.brain.client import IMPROVE_SCHEMA, _run_cli, extract_json
@@ -116,13 +118,46 @@ def propose_improvements(
 _DIFF_FENCE_RE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 
 
-def build_coder_prompt(draft: ImproveDraft) -> str:
+_PATH_RE = re.compile(r"[\w./-]*trading/[\w./-]+\.py")
+MAX_FILE_CHARS = 12_000
+
+
+def collect_referenced_files(draft: ImproveDraft, repo_root: Path) -> str:
+    """제안이 언급한 파일의 현재 내용을 줄번호와 함께 싣는다.
+
+    unified diff 는 문맥 줄이 원본과 글자 단위로 일치해야 적용된다. 파일을
+    안 보여주면 코다리가 기억으로 추측해서 쓰고, git apply 가 'corrupt patch'
+    또는 'patch failed' 로 거부한다 (2026-07-20 첫 실제 카드가 이렇게 실패).
+    """
+    seen, blocks = set(), []
+    for raw in _PATH_RE.findall(f"{draft.proposal}\n{draft.analysis}\n{draft.diagnosis}"):
+        rel = raw[raw.index("trading/"):]
+        if rel in seen:
+            continue
+        seen.add(rel)
+        f = repo_root / rel
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        numbered = "\n".join(f"{i:4d}| {ln}" for i, ln in enumerate(text.splitlines(), 1))
+        blocks.append(f"--- {rel} ---\n{numbered[:MAX_FILE_CHARS]}")
+    return "\n\n".join(blocks) or "(제안에서 파일 경로를 찾지 못했다)"
+
+
+def build_coder_prompt(draft: ImproveDraft, repo_root: Path | None = None) -> str:
+    files = collect_referenced_files(draft, repo_root) if repo_root else "(파일 미제공)"
     return f"""당신은 자동매매 팀의 코드 담당 '코다리'다. 아래 승인 대기 개선안을
 실제 코드 diff로 구현하라.
 
 [분석] {draft.analysis}
 [진단] {draft.diagnosis}
 [제안] {draft.proposal}
+
+[대상 파일의 현재 내용 — 문맥 줄은 반드시 여기서 그대로 옮겨라]
+{files}
 
 규칙:
 - 제안에 직접 연결된 라인만 수정하라 (surgical). 무관한 코드·주석·포맷 변경 금지.
@@ -131,16 +166,74 @@ def build_coder_prompt(draft: ImproveDraft) -> str:
 
 응답 형식 (이 순서 그대로):
 1. "지시를 이렇게 해석해 이렇게 구현했다" 요약 (3문장 이내)
-2. ```diff 펜스 안에 git unified diff (diff --git a/... b/... 형식) 하나"""
+2. 수정한 파일마다 아래 펜스를 하나씩. 바뀐 부분만이 아니라 **파일 전체**를
+   담아라. 위 원문에서 손대지 않은 줄은 글자 그대로 옮겨라.
+
+```file:trading/autotrader/example.py
+(파일 전체 내용)
+```
+
+⚠️ diff 를 직접 쓰지 마라. diff 는 이 시스템이 파일 내용을 비교해 만든다.
+@@ 줄 수나 문맥을 손으로 맞추려다 틀리는 사고를 없애기 위한 것이다."""
 
 
-def extract_coder_output(raw: str) -> tuple[str, str] | None:
-    """(요약, diff) 반환. diff 펜스가 없으면 None."""
-    m = _DIFF_FENCE_RE.search(raw)
-    if not m or not m.group(1).strip():
-        return None
-    summary = (raw[: m.start()].strip() or "(요약 없음)")[:500]
-    return summary, m.group(1)
+_FILE_FENCE_RE = re.compile(r"```file:(\S+)\n(.*?)```", re.DOTALL)
+
+
+def extract_coder_files(raw: str) -> tuple[str, list[tuple[str, str]]]:
+    """(요약, [(경로, 새 내용), ...]) 반환. 파일 펜스가 없으면 빈 목록."""
+    hits = list(_FILE_FENCE_RE.finditer(raw))
+    if not hits:
+        return (raw[:500].strip() or "(요약 없음)"), []
+    summary = (raw[: hits[0].start()].strip() or "(요약 없음)")[:500]
+    files = []
+    for m in hits:
+        path = m.group(1).strip().lstrip("./")
+        body = m.group(2)
+        if path and body.strip():
+            files.append((path, body))
+    return summary, files
+
+
+def make_diff(repo_root: Path, rel_path: str, new_text: str) -> str:
+    """파일 원본과 새 내용을 git 으로 비교해 정확한 unified diff 를 만든다.
+
+    LLM 에게 diff 를 직접 쓰게 하면 @@ 줄 수·문맥·hunk 오프셋을 모두 맞춰야
+    하는데, 파일 하나에 hunk 가 다섯 개만 돼도 누적 오프셋에서 틀린다
+    (2026-07-20: 문맥은 한 줄도 안 틀렸는데 14 hunk 짜리가 적용 실패).
+    내용만 받고 diff 는 git 이 만들면 이 실패가 구조적으로 사라진다.
+    """
+    orig = repo_root / rel_path
+    if not new_text.endswith("\n"):
+        new_text += "\n"
+    with tempfile.TemporaryDirectory() as td:
+        newf = Path(td) / "new"
+        newf.write_text(new_text, encoding="utf-8", newline="\n")
+        oldf = orig if orig.is_file() else Path(td) / "old"
+        if not orig.is_file():
+            oldf.write_text("", encoding="utf-8", newline="\n")
+        proc = subprocess.run(
+            ["git", "diff", "--no-index", "--no-color", "--", str(oldf), str(newf)],
+            cwd=repo_root, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=60,
+        )
+    out = proc.stdout
+    if not out.strip():
+        return ""  # 변경 없음
+    body = out.split("\n", 1)[1] if "\n" in out else ""
+    lines = [f"diff --git a/{rel_path} b/{rel_path}"]
+    for line in body.splitlines():
+        if line.startswith("--- "):
+            lines.append("--- /dev/null" if not orig.is_file() else f"--- a/{rel_path}")
+        elif line.startswith("+++ "):
+            lines.append(f"+++ b/{rel_path}")
+        elif line.startswith("index ") or line.startswith("new file mode"):
+            continue
+        else:
+            lines.append(line)
+    if not orig.is_file():
+        lines.insert(1, "new file mode 100644")
+    return "\n".join(lines) + "\n"
 
 
 def implement_and_submit(
@@ -149,6 +242,7 @@ def implement_and_submit(
     brain: str = "opus",
     runner: Callable[[str, str], str] | None = None,
     errors: list[str] | None = None,
+    repo_root: Path | None = None,
 ) -> ActionResult | None:
     """코다리 호출 → diff 추출 → 큐 제출. 실패 시 None.
 
@@ -158,17 +252,32 @@ def implement_and_submit(
     errors = errors if errors is not None else []
     run = runner or _run_cli
     try:
-        raw = run(brain, build_coder_prompt(draft))
+        raw = run(brain, build_coder_prompt(draft, repo_root))
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         errors.append(f"코다리 CLI 실패: {e}"[:300])
         return None
-    out = extract_coder_output(raw)
-    if out is None:
+    summary, files = extract_coder_files(raw)
+    if not files:
         errors.append(
-            f"코다리 응답에 ```diff 펜스 없음 (길이 {len(raw)}). head: {raw[:200]!r}"
+            f"코다리 응답에 ```file: 펜스 없음 (길이 {len(raw)}). head: {raw[:200]!r}"
         )
         return None
-    summary, diff = out
+    if repo_root is None:
+        errors.append("repo_root 미지정 — diff 를 생성할 수 없다")
+        return None
+    parts = []
+    for rel, body in files:
+        try:
+            d = make_diff(repo_root, rel, body)
+        except (subprocess.SubprocessError, OSError) as e:
+            errors.append(f"diff 생성 실패 {rel}: {e}"[:200])
+            continue
+        if d:
+            parts.append(d)
+    if not parts:
+        errors.append(f"변경 내용 없음 (파일 {len(files)}개 받았으나 원본과 동일)")
+        return None
+    diff = "".join(parts)
     return queue.submit(
         draft.analysis, draft.diagnosis,
         f"{draft.proposal}\n\n[코다리 구현 요약] {summary}", diff,
@@ -185,6 +294,7 @@ def run_improve_cycle(
     coder_brain: str = "opus",
     proposer_runner: Callable | None = None,
     coder_runner: Callable | None = None,
+    repo_root: Path | None = None,
 ) -> dict:
     """반환: {"drafts": n, "submitted": [...], "rejected": [...], "failed": n, "errors": [...]}"""
     drafts, errors = propose_improvements(perf_summary, proposer_brain, proposer_runner)
@@ -192,7 +302,7 @@ def run_improve_cycle(
               "failed": 0, "errors": list(errors)}
     for d in drafts:
         r = implement_and_submit(d, queue, coder_brain, coder_runner,
-                                 errors=report["errors"])
+                                 errors=report["errors"], repo_root=repo_root)
         if r is None:
             report["failed"] += 1
         elif r.ok:
