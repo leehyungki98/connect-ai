@@ -9,21 +9,31 @@ from pathlib import Path
 _TOL = 1e-6
 
 
-def execute(orders, prices: dict, holding: dict, commission_bps: int):
+def execute(orders, prices: dict, holding: dict, commission_bps: int,
+            min_commission_usd: float = 0.0, sec_fee_bps: float = 0.0):
     """SELL 먼저 → BUY. 반환: (새 holding, 체결 내역). 현금 음수면 예외 (가드가
-    먼저 막지만 이중 방어)."""
+    먼저 막지만 이중 방어).
+
+    비용 = max(정률 수수료, 건당 최소 수수료) + SEC 수수료(매도만).
+    최소 수수료가 **자본 규모에 대한 유일한 고정비**다 — 이게 없으면 백테스트가
+    규모에 반응하지 않는다 (2026-07-20 검증에서 드러난 결함).
+    """
     c = commission_bps / 10_000.0
+    sec = sec_fee_bps / 10_000.0
     cash = holding["cash_usd"]
     positions = {t: dict(p) for t, p in holding.get("positions", {}).items()}
     fills = []
 
     def fill(o, price):
         gross = o.qty * price
-        commission = gross * c
+        commission = max(gross * c, min_commission_usd)
+        if o.side == "SELL":
+            commission += gross * sec        # SEC 수수료는 매도에만
         fills.append({
             "ticker": o.ticker, "side": o.side, "sleeve": o.sleeve,
             "qty": round(o.qty, 6), "price": price,
             "gross_usd": round(gross, 2), "commission_usd": round(commission, 2),
+            "min_applied": gross * c < min_commission_usd,
         })
         return gross, commission
 

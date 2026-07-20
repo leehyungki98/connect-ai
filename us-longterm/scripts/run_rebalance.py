@@ -21,8 +21,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from longcore import store, thesis  # noqa: E402
-from longcore.config import (BUCKETS, COMMISSION_BPS, FX_TICKER,  # noqa: E402
-                             THESIS_CONSECUTIVE_OUT, THESIS_EXIT_TARGET)
+from longcore.config import (BUCKETS, COMMISSION_BPS, FRACTIONAL_SHARES,  # noqa: E402
+                             FX_SPREAD_BPS, FX_TICKER, MIN_COMMISSION_USD,
+                             SEC_FEE_BPS, THESIS_CONSECUTIVE_OUT, THESIS_EXIT_TARGET)
 from longcore.data import fetch_history  # noqa: E402
 from longcore.gates import paper_only, rebalance_gate  # noqa: E402
 from longcore.paper import execute, record_rebalance  # noqa: E402
@@ -100,7 +101,8 @@ def main() -> int:
             if not g.ok:
                 rc = fail(g.reasons)
                 continue
-            capital_usd = cfg["capital_krw"] / usdkrw
+            # 환전 스프레드 — KRW→USD 환전에서 1회 물린다 (실계좌의 실제 비용)
+            capital_usd = (cfg["capital_krw"] / usdkrw) * (1 - FX_SPREAD_BPS / 10_000.0)
             holding = {
                 "cash_usd": capital_usd, "positions": {}, "initialized": False,
                 "inception": {
@@ -150,7 +152,8 @@ def main() -> int:
             tag = "quarterly"
 
         # ③ 주문 생성
-        orders = make_orders(holding, prices, cfg, breached)
+        orders = make_orders(holding, prices, cfg, breached,
+                             fractional=FRACTIONAL_SHARES)
         if not args.init and candidates:
             orders = orders + exit_orders(holding, prices, candidates)
 
@@ -180,7 +183,8 @@ def main() -> int:
             print("  dry-run — 체결·기록 없음")
             continue
 
-        new_holding, fills = execute(orders, prices, holding, COMMISSION_BPS)
+        new_holding, fills = execute(orders, prices, holding, COMMISSION_BPS,
+                                     MIN_COMMISSION_USD, SEC_FEE_BPS)
         new_holding["initialized"] = True
         w_after = weights(new_holding, prices, cfg["sleeves"])
         path = record_rebalance(

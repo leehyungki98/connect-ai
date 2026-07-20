@@ -10,7 +10,8 @@ from ..types import Order
 MIN_TRADE_USD = 1.0   # 미세 주문 방지 (페이퍼 노이즈 컷)
 
 
-def make_orders(holding: dict, prices: dict, bucket_cfg: dict, breached) -> list:
+def make_orders(holding: dict, prices: dict, bucket_cfg: dict, breached,
+                fractional: bool = True) -> list:
     targets = bucket_cfg["targets"]
     sleeves = bucket_cfg["sleeves"]
     cap = bucket_cfg["max_single_stock"]
@@ -34,10 +35,18 @@ def make_orders(holding: dict, prices: dict, bucket_cfg: dict, breached) -> list
             delta = target_value - current_value
             if abs(delta) < MIN_TRADE_USD:
                 continue
+            qty = abs(delta) / price
+            if not fractional:
+                # 정수 주만 가능한 계좌 — 목표를 넘지 않도록 내림한다.
+                # 자본이 작고 주가가 비싸면 여기서 0 이 되어 주문 자체가 사라진다
+                # (VOO $683 / NAV $5,068 → 1주 = NAV 의 13.5%).
+                qty = float(int(qty))
+                if qty <= 0:
+                    continue
             orders.append(Order(
                 ticker=ticker,
                 side="BUY" if delta > 0 else "SELL",
-                qty=abs(delta) / price,
+                qty=qty,
                 sleeve=sleeve,
                 ref_price=price,
             ))

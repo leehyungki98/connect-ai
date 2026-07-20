@@ -64,9 +64,48 @@ def _get(df, col, row):
         return None
 
 
+def snapshot_history(ticker: str) -> list:
+    """누적 스냅샷 기반 판정 이력 — 있으면 이쪽이 우선이다.
+
+    yfinance 연간 재무제표(5년, 밸류 지표 없음)보다 훨씬 정확하다. 스냅샷에는
+    **시점 선행PER·PEG 가 들어있어** 3기준을 온전히 적용할 수 있기 때문이다.
+    쌓일수록 이 검증이 저절로 좋아진다 — 그게 run_snapshot.py 를 만든 이유다.
+    """
+    from longcore import snapshot
+    recs = snapshot.load(ticker)
+    out = []
+    for r in recs:
+        f = snapshot.as_fundamentals(r)
+        res = thesis.judge_criteria(f, THESIS_CRITERIA)
+        out.append({"date": r["date"], "criteria": res,
+                    "failed": thesis.quarter_verdict(res, THESIS_FAIL_THRESHOLD)})
+    return out
+
+
+def report_snapshot_coverage(tickers) -> bool:
+    """스냅샷이 검증에 쓸 만큼 쌓였는지. 충분하면 True."""
+    from longcore import snapshot
+    MIN_QUARTERS = 8
+    print("── 누적 스냅샷 현황 ─────────────────────────────────────")
+    ready = True
+    for t in tickers:
+        cov = snapshot.coverage(t)
+        ok = cov["quarters"] >= MIN_QUARTERS
+        ready = ready and ok
+        status = "✓ 검증 가능" if ok else f"— {MIN_QUARTERS - cov['quarters']}분기 더 필요"
+        print(f"  {t:<5} {cov['count']:>3}건 / {cov['quarters']}분기  {status}")
+    if not ready:
+        print("  → 아직 부족하다. 아래는 yfinance 연간 재무제표 기반 대체 검증이다")
+        print("    (밸류 기준 판정 불가 → 실제 규칙보다 덜 민감 = 퇴출 횟수는 하한).\n")
+    else:
+        print("  → 스냅샷만으로 3기준 온전히 적용 가능. 이쪽 결과를 신뢰하라.\n")
+    return ready
+
+
 def main() -> int:
     cfg = BUCKETS["해외증권"]
     tickers = sorted(cfg["sleeves"]["GROWTH"])
+    report_snapshot_coverage(tickers)
     print("논지 재판정 규칙 — 역사적 표적 검증")
     print(f"기준: 순이익률 {THESIS_CRITERIA['net_margin_min']:.0%}↑ + FCF 흑자 / "
           f"매출성장 {THESIS_CRITERIA['revenue_growth_min']:.0%}↑ / 밸류(과거값 부재 → UNKNOWN)")

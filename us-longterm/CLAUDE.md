@@ -13,6 +13,11 @@
   종목을 밴드가 기계적으로 추가 매수한다. **물타기는 논지가 살아있는 종목에만 허용.**
 - 단일 종목 상한은 **실효 비중(look-through)** 기준 15%. ETF 안에 든 같은 종목까지
   합산한다 (NVDA 직접 10% + VOO 경유 4.5% = 14.5%가 진짜 노출).
+- **소수점 매매는 요건이다** (선호가 아니다). 이 자본 규모에서 정수 주만으로는
+  META 1주($646)가 목표 슬롯($507)보다 커서 포트폴리오 구성 자체가 불가능하다.
+  실계좌 전환 시 소수점 거래 지원 증권사 필수 — 아니면 자본을 3,000만원 이상으로.
+- 비용 파라미터(`MIN_COMMISSION_USD`·`FX_SPREAD_BPS`)는 **추정치**다.
+  실계좌 전환 시 실제 증권사 수수료표로 교체할 것.
 - 통화(환율) 노출은 리스크로 항상 기록·측정한다 (fx_log, nav_log의 KRW 병기).
 - `state/`는 운영 데이터(커밋 금지), `ledger/`는 학습 자산(git 추적).
 - 스윙팀(`trading/`)은 별도 조직 — 읽기만 허용, 수정 금지. 코드 공유·import 금지.
@@ -40,10 +45,14 @@
 - 최초 1회 (데스크 설립): `python scripts/run_rebalance.py --init` — 보유가 비어 있을
   때만 허용되는 최초 배분. 분기 점검일 게이트만 면제, 나머지 안전층 전부 적용.
 - 매일: `python scripts/run_daily.py` (실효 비중 여유분 표시)
+- **월 1회 이상**: `python scripts/run_snapshot.py` — 재무 스냅샷 적재.
+  선행PER·PEG 는 시점 데이터라 오늘 안 찍으면 영원히 복구 불가다 (ledger/fundamentals/)
 - 분기 리뷰(점검일 전): `python scripts/run_review.py` — 논지 재판정 + 정세 집계.
   제안만 낸다. 퇴출 후보가 나오면 근거를 `ledger/reviews/` 에 기록하고 승인받는다
 - 분기 점검일: `python scripts/run_rebalance.py --dry-run` → 확인 후 실행.
   퇴출 승인 시 `--confirm-exits NVDA` 처럼 티커를 직접 적어야 진행된다 (자동 퇴출 없음)
 - 성과: `python scripts/run_report.py`
+- 비용 민감도: `python scripts/run_cost_sensitivity.py` (규모·소수점매매 영향)
+- 논지 규칙 검증: `python scripts/run_thesis_backtest.py`
 - 테스트: `python -m pytest tests/ -q`
 - 킬스위치: `python -m longcore.safety status|engage "이유"|reset`
