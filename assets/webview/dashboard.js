@@ -1309,3 +1309,28 @@ window.addEventListener('message', e => {
   const m = e.data;
   if (m.type === 'revenueMini') _renderRevenueMini(m.data);
 });
+
+/* 변경 제안 카드 심사 버튼 — 카드가 다시 그려질 때마다 붙지 않도록 문서
+   레벨 위임으로 한 번만 건다. 승인은 되돌리기 번거로우니 2단계 확인. */
+document.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest && e.target.closest('.prop-btn');
+  if (!btn) return;
+  const act = btn.getAttribute('data-act');
+  const card = btn.getAttribute('data-card');
+  const box = btn.closest('.prop-card');
+  const reason = box ? (box.querySelector('.prop-reason') || {}).value || '' : '';
+  if ((act === 'reject' || act === 'revise') && !reason.trim()) {
+    btn.textContent = '⚠️ 사유를 적어주세요';
+    setTimeout(() => { btn.textContent = act === 'reject' ? '❌ 거부' : '✏️ 수정 요청'; }, 2500);
+    return;
+  }
+  if (act === 'approve' && btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = '✅ 한 번 더 누르면 승인';
+    setTimeout(() => { btn.dataset.armed = '0'; btn.textContent = '✅ 승인'; }, 4000);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '처리 중…';
+  try { vscode.postMessage({ type: 'proposalAction', action: act, card: card, reason: reason }); } catch (_) {}
+});

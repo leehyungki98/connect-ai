@@ -1682,17 +1682,26 @@ function _markdownToTelegram(src: string): string {
   return s.trim();
 }
 
-async function sendTelegramReport(text: string): Promise<boolean> {
+async function sendTelegramReport(text: string, buttons?: Array<Array<{ text: string; data: string }>>): Promise<boolean> {
   const { token, chatId } = readTelegramConfig();
   if (!token || !chatId) return false;
   try {
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    await axios.post(url, {
+    const body: any = {
       chat_id: chatId,
       text: _markdownToTelegram(text).slice(0, 4000),
       parse_mode: 'Markdown',
       disable_web_page_preview: true
-    }, { timeout: 8000 });
+    };
+    /* 인라인 버튼 — 카드 심사처럼 오타 한 글자가 잘못된 승인으로 이어지는
+       조작은 타이핑 대신 버튼으로 받는다. callback_data 는 64바이트 상한. */
+    if (buttons?.length) {
+      body.reply_markup = {
+        inline_keyboard: buttons.map(row =>
+          row.map(b => ({ text: b.text, callback_data: b.data.slice(0, 64) }))),
+      };
+    }
+    await axios.post(url, body, { timeout: 8000 });
     return true;
   } catch {
     return false;
@@ -2161,7 +2170,25 @@ async function handleTelegramCommand(text: string): Promise<void> {
             tradingRoot, () => {}, 900000, 'both', { PYTHONIOENCODING: 'utf-8' },
         );
         const out = (r.output || '').trim() || '(출력 없음)';
-        await sendTelegramLong(`📋 *제안 카드* — \`${cmd}\`\n\n\`\`\`\n${out.slice(0, 3000)}\n\`\`\``);
+        /* 목록·상세에는 버튼을 붙인다. 카드 id 는 뒤 6자리라 오타 한 글자가
+           엉뚱한 승인이 될 수 있어, 타이핑 대신 눌러서 고르게 한다. */
+        const ids = [...new Set(
+            [...out.matchAll(/\[(\d{6})\]|카드 (\d{6})/g)].map(m => m[1] || m[2]))];
+        let buttons: Array<Array<{ text: string; data: string }>> | undefined;
+        if (sub === 'list' && ids.length) {
+            buttons = ids.map(id => [{ text: `📄 ${id} 자세히`, data: `/card ${id}` }]);
+        } else if (sub === 'show' && ids.length) {
+            const id = ids[0];
+            buttons = [
+                [{ text: '✅ 승인', data: `/approve ${id}` }],
+                [{ text: '❌ 거부', data: `/reject ${id} 폰에서 거부` }],
+            ];
+        }
+        await sendTelegramLong(`📋 *제안 카드* — \`${cmd}\`\n\n${out.slice(0, 3000)}`);
+        if (buttons) {
+            await sendTelegramReport(
+                sub === 'list' ? '어느 카드를 볼까요?' : '이 카드를 어떻게 할까요?', buttons);
+        }
         return;
     }
     /* P1-8: edit commands — let the user retarget tasks without re-creating.
@@ -2980,7 +3007,7 @@ function startTelegramPolling() {
                - 트래픽·배터리 절약 */
             const url = `https://api.telegram.org/bot${token}/getUpdates`;
             const res = await axios.get(url, {
-                params: { offset: _telegramPollOffset, timeout: 25, allowed_updates: JSON.stringify(['message']) },
+                params: { offset: _telegramPollOffset, timeout: 25, allowed_updates: JSON.stringify(['message', 'callback_query']) },
                 timeout: 30_000 /* 서버 timeout(25s) + 네트워크 여유 5s */
             });
             const updates = res.data?.result || [];
@@ -2990,6 +3017,24 @@ function startTelegramPolling() {
                 /* v2.89.24 — 유저 레벨 파일에도 즉시 commit. 다른 창이 다음 tick에 이걸 읽어서
                    같은 update 두 번 처리하지 않게. */
                 _writeTelegramOffset(_telegramPollOffset);
+                /* 인라인 버튼 클릭. 텔레그램은 답을 안 주면 버튼에 로딩 표시가
+                   계속 돌아서, 무엇을 하든 answerCallbackQuery 를 먼저 보낸다. */
+                const cq = u.callback_query;
+                if (cq) {
+                    const cqChat = String(cq.message?.chat?.id ?? '');
+                    try {
+                        await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`,
+                            { callback_query_id: cq.id }, { timeout: 8000 });
+                    } catch { /* 버튼 로딩만 남을 뿐 처리에는 지장 없음 */ }
+                    if (cqChat !== String(chatId)) continue; // whitelist guard
+                    const data = String(cq.data || '').trim();
+                    if (!data) continue;
+                    try { await handleTelegramCommand(data); }
+                    catch (e: any) {
+                        try { await sendTelegramReport(`⚠️ 버튼 처리 중 오류: ${e?.message || e}`); } catch {}
+                    }
+                    continue;
+                }
                 const m = u.message;
                 if (!m) continue;
                 const fromChat = String(m.chat?.id ?? '');
@@ -7939,11 +7984,41 @@ function _tradingProposalsCardHtml(): string {
             if (dir && fs.existsSync(dir)) {
                 for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json')).sort()) {
                     const card = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
-                    const title = String(card.proposal || '').split('\n')[0].slice(0, 70);
-                    const diag = String(card.diagnosis || '').slice(0, 90);
-                    items += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.15)">
-                      <div style="font-weight:600">${card.id} — ${title}</div>
-                      <div style="opacity:.7;font-size:12px">${diag}</div></div>`;
+                    const esc = (s: string) => String(s || '')
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const short = String(card.id).slice(-6);
+                    const title = card.title?.trim()
+                        || String(card.proposal || '').split('\n')[0].slice(0, 70);
+                    /* 변경 범위는 diff 에서 직접 센다 — 모델 주장이 아니라 사실이다. */
+                    const diff = String(card.diff || '');
+                    const files = diff.split('\n').filter(l => l.startsWith('diff --git'))
+                        .map(l => l.split(' b/').pop() || '');
+                    const added = diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+                    const removed = diff.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+                    const hasTests = files.some(x => x.includes('/tests/'));
+                    const sect = (label: string, v: string) => v?.trim()
+                        ? `<div style="margin-top:6px"><div style="font-size:11px;opacity:.6">${label}</div>
+                           <div style="font-size:12px;line-height:1.5">${esc(v).slice(0, 400)}</div></div>` : '';
+                    items += `<div class="prop-card" data-card="${short}" style="padding:10px;margin:8px 0;border:1px solid rgba(128,128,128,.25);border-radius:8px">
+                      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+                        <div style="font-weight:600">${esc(title)}</div>
+                        <code style="font-size:11px;opacity:.6">${short}</code>
+                      </div>
+                      ${sect('무엇이 문제인가', card.diagnosis)}
+                      ${sect('승인하지 않으면', card.risk)}
+                      ${sect('승인했을 때의 단점', card.tradeoff)}
+                      <div style="margin-top:8px;font-size:11px;opacity:.75">
+                        ${files.length}개 파일 · +${added}/-${removed}줄 ·
+                        ${hasTests ? '테스트 포함' : '<span style="color:#e0a800">테스트 없음</span>'}
+                      </div>
+                      <textarea class="prop-reason" rows="2" placeholder="사유·수정 지시 (거부·수정 요청 시 필수)"
+                        style="width:100%;margin-top:8px;font-size:12px;padding:6px;box-sizing:border-box"></textarea>
+                      <div style="display:flex;gap:6px;margin-top:6px">
+                        <button class="prop-btn" data-act="approve" data-card="${short}">✅ 승인</button>
+                        <button class="prop-btn" data-act="reject" data-card="${short}">❌ 거부</button>
+                        <button class="prop-btn" data-act="revise" data-card="${short}">✏️ 수정 요청</button>
+                      </div>
+                    </div>`;
                     count++;
                 }
             }
@@ -11528,6 +11603,33 @@ class CompanyDashboardPanel {
                     } catch (e: any) {
                         this._postToast(`⚠️ 자가검증 모드 변경 실패: ${e?.message || e}`, true);
                     }
+                } else if (msg?.type === 'proposalAction' && typeof msg.card === 'string') {
+                    /* 변경 제안 카드 심사 — 유일한 승인 지점. CLI 를 그대로
+                       부른다. 게이트(금지구역·diff 적용·전체 테스트·실패 시
+                       롤백)는 Python 쪽 한 곳에만 두고, UI 는 입구일 뿐이다. */
+                    const act = String(msg.action || '');
+                    const reason = String(msg.reason || '').trim();
+                    if (!['approve', 'reject', 'revise'].includes(act)) { return; }
+                    if ((act === 'reject' || act === 'revise') && !reason) {
+                        this._postToast('⚠️ 사유·수정 지시를 적어주세요', true);
+                        return;
+                    }
+                    const root = _resolveTradingRoot();
+                    if (!root) { this._postToast('⚠️ trading 폴더를 찾지 못했어요', true); return; }
+                    this._postToast(act === 'approve'
+                        ? `⏳ ${msg.card} 승인 게이트 실행 중 (전체 테스트까지 최대 15분)`
+                        : `${msg.card} 처리 중…`);
+                    const argv = ['scripts/run_proposals.py', act, msg.card, ...(reason ? [reason] : [])];
+                    runCommandCaptured(
+                        `${_pythonCmd()} ${argv.map(a => JSON.stringify(a)).join(' ')}`,
+                        root, () => {}, 900000, 'both', { PYTHONIOENCODING: 'utf-8' },
+                    ).then(r => {
+                        const out = (r.output || '').trim();
+                        const ok = /상태: approved/.test(out) || (act !== 'approve' && r.exitCode === 0);
+                        this._postToast(`${ok ? '✅' : '❌'} ${out.split('\n').filter(Boolean).pop() || '(출력 없음)'}`.slice(0, 200), !ok);
+                        sendTelegramLong(`📋 *제안 카드* — ${act} \`${msg.card}\`\n\n${out.slice(0, 2500)}`).catch(() => {});
+                        this._sendState();  // 큐에서 빠졌으니 카드 목록 갱신
+                    }).catch((e: any) => this._postToast(`⚠️ 실행 실패: ${e?.message || e}`, true));
                 } else if (msg?.type === 'openAgentFolder' && typeof msg.agentId === 'string') {
                     /* v2.87.6 — 대시보드 팀 카드 클릭 → 에이전트 폴더 OS 탐색기에서
                        열기. _agents/<id>/ 안에 지식·스킬·메모리·세션 다 있어서
