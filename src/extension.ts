@@ -2906,7 +2906,13 @@ async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
             const head = trades.length
                 ? `\n\n💰 *체결*\n${trades.map(t => `• ${t}`).join('\n')}`
                 : '';
-            const msg = `📱 *영숙* — ${entry.label} ${status}${head}\n\n\`\`\`\n${out.slice(0, 2500)}\n\`\`\``;
+            /* 성공 보고는 코드 펜스로 감싸지 않는다 — 펜스가 붙으면 사후분석
+               마크다운이 통째로 터미널 덤프처럼 보인다. 실패했을 때만 원문을
+               그대로 감싸서 진단에 쓴다. */
+            const body = r.exitCode === 0
+                ? out.slice(0, 3000)
+                : `\`\`\`\n${out.slice(0, 2500)}\n\`\`\``;
+            const msg = `📱 *영숙* — ${entry.label} ${status}${head}\n\n${body}`;
             try { await sendTelegramLong(msg); } catch { /* silent */ }
             try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} 자동 실행 ${status}`, '📆'); } catch { /* ignore */ }
         }
@@ -7133,9 +7139,12 @@ def main():
         argv[0] = str(script)
 
     cmd = [sys.executable] + argv
-    print("[>] " + " ".join(cmd))
-    print("[>] cwd = " + str(root))
-    print("-" * 60)
+    # 사람이 직접 돌릴 때만 보이는 디버그 줄. 스케줄러가 파이프로 받을
+    # 때는 폰 보고에 배관 로그가 섞여서 정작 내용이 묻힌다.
+    if sys.stdout.isatty():
+        print("[>] " + " ".join(cmd))
+        print("[>] cwd = " + str(root))
+        print("-" * 60)
     env = dict(os.environ)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     return subprocess.call(cmd, cwd=str(root), env=env)
