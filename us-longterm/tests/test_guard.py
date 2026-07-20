@@ -48,8 +48,21 @@ def test_oversell_blocked(monkeypatch, tmp_path):
 def test_single_stock_cap_blocked(monkeypatch, tmp_path):
     _tmp_state(monkeypatch, tmp_path)
     h = cash_only_holding(cash=21_000.0)
-    res = guard.check([_buy("NVDA", 15.0)], h, PRICES, CFG, 25)  # $3,000 ≈ 14%
-    assert not res.ok and any("단일 종목 상한" in r for r in res.reasons)
+    res = guard.check([_buy("NVDA", 20.0)], h, PRICES, CFG, 25)  # $4,000 ≈ 19%
+    assert not res.ok and any("실효 상한" in r for r in res.reasons)
+
+
+def test_lookthrough_catches_what_direct_weight_misses(monkeypatch, tmp_path):
+    """설계 개정의 회귀 테스트 — 직접 비중은 상한 아래인데 ETF 중복까지 세면 초과.
+
+    NVDA 직접 11% (< 15%) + VOO 60% 경유 4.5% = 실효 15.5% > 15% → 차단돼야 한다.
+    이전의 직접분-only 로직은 이걸 통과시켰다.
+    """
+    _tmp_state(monkeypatch, tmp_path)
+    h = cash_only_holding(cash=20_000.0)
+    orders = [_buy("VOO", 24.0, "ETF"), _buy("NVDA", 11.0)]
+    res = guard.check(orders, h, PRICES, CFG, 25)
+    assert not res.ok and any("NVDA" in r and "실효 상한" in r for r in res.reasons)
 
 
 def test_commission_drag_on_cap_is_tolerated(monkeypatch, tmp_path):
