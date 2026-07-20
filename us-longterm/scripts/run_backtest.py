@@ -1,0 +1,107 @@
+"""리밸런싱 규칙 백테스트 — 확정 구성으로 분기 ±5%p 밴드 규칙 시뮬레이션.
+
+⚠ 이 백테스트는 리밸런싱 **메커니즘 검증**용이다. 오늘 고른 종목을 과거에
+적용하므로 사후 선택 편향이 있다 — 성과 수치를 "검증됨"의 근거로 쓰지 마라.
+같은 데이터로 파라미터(밴드·주기) 반복 튜닝 금지 (CLAUDE.md).
+"""
+import argparse
+import json
+import sys
+from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from longcore import store  # noqa: E402
+from longcore.config import (BACKTEST_END, BACKTEST_START, BENCHMARK,  # noqa: E402
+                             BUCKETS, COMMISSION_BPS)
+from longcore.data import fetch_history  # noqa: E402
+from longcore.paper import execute  # noqa: E402
+from longcore.portfolio import nav_usd, weights  # noqa: E402
+from longcore.rebalance import check_bands, make_orders  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+START_CAPITAL_USD = 100_000.0
+
+
+def metrics(nav: pd.Series) -> dict:
+    ret = nav.pct_change().dropna()
+    years = (nav.index[-1] - nav.index[0]).days / 365.25
+    cagr = (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
+    mdd = float((1 - nav / nav.cummax()).max())
+    sharpe = float(ret.mean() / ret.std() * (252 ** 0.5)) if ret.std() > 0 else 0.0
+    return {"CAGR": round(cagr, 4), "MDD": round(mdd, 4),
+            "Sharpe": round(sharpe, 2), "total": round(nav.iloc[-1] / nav.iloc[0] - 1, 4)}
+
+
+def quarterly_first_days(index, months) -> list:
+    out = []
+    for (y, m), grp in pd.Series(index=index, dtype=float).groupby(
+            [index.year, index.month]):
+        if m in months:
+            out.append(grp.index[0])
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default=BACKTEST_START)
+    ap.add_argument("--end", default=BACKTEST_END)
+    args = ap.parse_args()
+
+    cfg = BUCKETS["해외증권"]
+    tickers = sorted({t for comp in cfg["sleeves"].values() for t in comp})
+    px = fetch_history(tickers + [BENCHMARK], args.start, args.end).dropna()
+    idx = px.index
+    rebal_days = set(quarterly_first_days(idx, set(cfg["rebalance_months"])))
+
+    holding = {"cash_usd": START_CAPITAL_USD, "positions": {}, "initialized": False}
+    first = idx[0]
+    prices0 = {t: float(px.loc[first, t]) for t in tickers}
+    orders = make_orders(holding, prices0, cfg, ["CASH"])   # 최초 배분
+    holding, _ = execute(orders, prices0, holding, COMMISSION_BPS)
+    holding["initialized"] = True
+
+    navs, events = [], []
+    for day in idx:
+        prices = {t: float(px.loc[day, t]) for t in tickers}
+        if day != first and day in rebal_days:
+            w = weights(holding, prices, cfg["sleeves"])
+            breached = check_bands(w, cfg["targets"], cfg["band"])
+            if breached:
+                orders = make_orders(holding, prices, cfg, breached)
+                holding, fills = execute(orders, prices, holding, COMMISSION_BPS)
+                events.append({"date": day.date().isoformat(),
+                               "breached": breached, "fills": len(fills)})
+        navs.append(nav_usd(holding, prices))
+    nav = pd.Series(navs, index=idx)
+    spy = px[BENCHMARK] / px[BENCHMARK].iloc[0] * START_CAPITAL_USD
+
+    m_desk, m_spy = metrics(nav), metrics(spy)
+    print(f"구간 {idx[0].date()} ~ {idx[-1].date()} · 시작 ${START_CAPITAL_USD:,.0f} · "
+          f"수수료 {COMMISSION_BPS}bps")
+    print(f"리밸런싱 실행 {len(events)}회 / 분기 점검 {len(rebal_days)}회 "
+          f"(이탈 없으면 주문 0건)")
+    for e in events:
+        print(f"  {e['date']}  이탈 {e['breached']}  체결 {e['fills']}건")
+    print(f"{'':<8}{'CAGR':>8}{'MDD':>8}{'Sharpe':>8}{'누적':>10}")
+    print(f"{'데스크':<8}{m_desk['CAGR']:>8.2%}{m_desk['MDD']:>8.2%}"
+          f"{m_desk['Sharpe']:>8.2f}{m_desk['total']:>10.2%}")
+    print(f"{'SPY TR':<8}{m_spy['CAGR']:>8.2%}{m_spy['MDD']:>8.2%}"
+          f"{m_spy['Sharpe']:>8.2f}{m_spy['total']:>10.2%}")
+    print("⚠ 사후 선택 편향: 오늘 고른 종목을 과거에 적용한 수치 — 참고만 할 것.")
+
+    out = store.STATE_DIR / f"backtest_{date.today().strftime('%Y%m%d')}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "start": str(idx[0].date()), "end": str(idx[-1].date()),
+        "desk": m_desk, "spy": m_spy, "rebalances": events,
+        "commission_bps": COMMISSION_BPS,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"저장: state/{out.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
