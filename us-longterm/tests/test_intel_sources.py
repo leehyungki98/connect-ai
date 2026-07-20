@@ -1,6 +1,4 @@
 """정세 소스 필터링 테스트 — 오프라인, 네트워크 불필요."""
-import pytest
-
 from longcore import intel_sources
 
 
@@ -134,9 +132,41 @@ class TestEmergingThemes:
         assert intel_sources.classify_tier("PLUG") == "theme"
         assert intel_sources.classify_tier("IONQ") == "theme"
 
-    def test_theme_ticker_in_universe(self):
-        for t in ("PLUG", "BE", "FCEL", "IONQ", "RGTI", "QBTS"):
+    def test_all_theme_tickers_in_universe(self):
+        """모든 테마 대표주가 UNIVERSE 에 합류돼 있어야 (일반화)."""
+        for t in intel_sources.THEME_TICKERS:
             assert t in intel_sources.UNIVERSE
+
+    def test_new_hype_themes_present(self):
+        """사용자 요청: 하이프 사이클 테마 폭넓게 (2026-07-21)."""
+        expected = {"HYDROGEN", "QUANTUM", "NUCLEAR", "SPACE", "ROBOTICS",
+                    "OBESITY", "CYBERSECURITY", "CRYPTO", "EV"}
+        assert expected <= set(intel_sources.THEMES)
+
+    def test_nuclear_keyword_and_ticker(self):
+        r = intel_sources.match_relevance(
+            "Oklo advances small modular reactor for data centers", "")
+        assert "OKLO" in r and "NUCLEAR" in r
+
+    def test_obesity_theme(self):
+        r = intel_sources.match_relevance(
+            "Eli Lilly GLP-1 weight loss drug wins approval", "")
+        assert "LLY" in r and "OBESITY" in r
+
+    def test_cybersecurity_theme(self):
+        r = intel_sources.match_relevance(
+            "CrowdStrike stops major ransomware attack", "")
+        assert "CRWD" in r and "CYBERSECURITY" in r
+
+    def test_space_theme_keyword_only(self):
+        """대표주 없이 위성 뉴스만 걸려도 SPACE 태그."""
+        r = intel_sources.match_relevance(
+            "New satellite constellation approved for broadband", "")
+        assert "SPACE" in r
+
+    def test_new_theme_tickers_are_theme_tier(self):
+        for t in ("OKLO", "RKLB", "LLY", "CRWD", "COIN", "RIVN", "SERV"):
+            assert intel_sources.classify_tier(t) == "theme"
 
 
 class TestWordBoundary:

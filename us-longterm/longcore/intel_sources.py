@@ -67,6 +67,8 @@ MACRO_KEYWORDS = [
 #    정세 추적은 '기록'이지 매수 신호가 아니다 — TSLA 를 기각하고도 관찰하는 것과 같다.
 #    테마가 성숙하거나(예: BE 는 FCF 흑자 전환) 데스크 방향이 바뀔 때 이력이 있게 한다.
 # 새 테마 추가는 여기 한 줄. 매칭되면 테마명 태그(예 "HYDROGEN")가 붙는다.
+# 티커는 2026-07 웹 검색으로 확인. 별칭은 짧은/흔한 단어 대신 구별되는 전체명만
+# (예 BE 는 'be' 가 아니라 'bloom energy', PL 은 'planet labs') — 단어경계라도 안전하게.
 THEMES = {
     "HYDROGEN": {
         "keywords": ["hydrogen", "fuel cell", "fuel-cell", "electrolyzer",
@@ -79,6 +81,42 @@ THEMES = {
                      "quantum annealing"],
         "tickers": {"IONQ": ["ionq"], "RGTI": ["rigetti"],
                     "QBTS": ["d-wave", "dwave"]},
+    },
+    "NUCLEAR": {
+        "keywords": ["nuclear reactor", "small modular reactor", "smr",
+                     "nuclear power", "uranium"],
+        "tickers": {"OKLO": ["oklo"], "SMR": ["nuscale"],
+                    "CEG": ["constellation energy"], "VST": ["vistra"]},
+    },
+    "SPACE": {
+        "keywords": ["satellite", "spacecraft", "rocket launch", "orbital",
+                     "missile defense", "space defense"],
+        "tickers": {"RKLB": ["rocket lab"], "ASTS": ["ast spacemobile", "spacemobile"],
+                    "PL": ["planet labs"], "LMT": ["lockheed"], "RTX": ["raytheon"]},
+    },
+    "ROBOTICS": {
+        "keywords": ["humanoid robot", "humanoid", "robotics", "physical ai"],
+        "tickers": {"SERV": ["serve robotics"]},   # TSLA(옵티머스)는 watchlist 로 이미 커버
+    },
+    "OBESITY": {
+        "keywords": ["obesity drug", "glp-1", "glp1", "weight loss drug",
+                     "weight-loss drug", "wegovy", "zepbound", "ozempic"],
+        "tickers": {"LLY": ["eli lilly"], "NVO": ["novo nordisk"]},
+    },
+    "CYBERSECURITY": {
+        "keywords": ["cybersecurity", "ransomware", "data breach", "cyberattack"],
+        "tickers": {"CRWD": ["crowdstrike"], "PANW": ["palo alto networks"],
+                    "ZS": ["zscaler"], "OKTA": ["okta"]},
+    },
+    "CRYPTO": {
+        "keywords": ["bitcoin", "cryptocurrency", "blockchain", "ethereum",
+                     "stablecoin"],
+        "tickers": {"COIN": ["coinbase"], "MSTR": ["microstrategy"]},
+    },
+    "EV": {
+        "keywords": ["electric vehicle", "ev battery", "lithium battery",
+                     "solid-state battery"],
+        "tickers": {"RIVN": ["rivian"], "QS": ["quantumscape"]},
     },
 }
 
