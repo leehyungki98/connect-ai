@@ -42,6 +42,13 @@ class Candidate:
 
 
 def build_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str:
+    """과업·출력 형식을 앞에, 데이터를 뒤에 둔다.
+
+    codex 는 프롬프트의 첫 지시에 응답하고 끝내는 경향이 있다. 예전처럼
+    "당신은 …판단 모듈이다" 라는 정체성 선언이 먼저 오면 그 정체성에만
+    답하고 decisions 를 0건으로 돌려준다 (2026-07-20 실측: 1,392자
+    프롬프트에서 맨 끝 지시 무시 + 0건). 명령형 과업을 맨 앞에 둔다.
+    """
     held_lines = (
         "\n".join(
             f"- {sym}: {p.qty}주, 평가액 {p.value_krw:,}원"
@@ -55,16 +62,9 @@ def build_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str:
         f"20일변동성 {c.ranked.vol20:.1%}"
         for c in candidates
     )
-    return f"""당신은 한국 주식 스윙 트레이딩(며칠~몇 주 보유) 판단 모듈이다.
-아래 후보 중 진입할 종목과 보유 종목 중 청산할 종목을 판단하라.
-
-[후보 종목]
-{cand_lines}
-
-[현재 보유]
-{held_lines}
-
-[계좌] 총평가 {pf.equity_krw:,}원, 현금 {pf.cash_krw:,}원
+    return f"""[과업] 아래 후보 중 진입할 종목과 보유 종목 중 청산할 종목을 판단하라.
+한국 주식 스윙 트레이딩(며칠~몇 주 보유) 기준이다.
+후보 각각에 대해 enter 또는 skip 판단을 반드시 하나씩 내라.
 
 규칙:
 - 확신 없으면 skip. 진입 강요 없음.
@@ -79,7 +79,15 @@ skip이면 가격/기간 필드는 null 또는 생략.
 
 ⚠️ 위에 명시된 키 외에는 **단 하나도 추가하지 마라**. 주석용 키("_" 등),
 수량(qty), 신뢰도, 메모 전부 금지다. 검증기가 여분 키를 발견하면 제안
-전체를 기각하므로 그날 매매가 통째로 사라진다."""
+전체를 기각하므로 그날 매매가 통째로 사라진다.
+
+[후보 종목]
+{cand_lines}
+
+[현재 보유]
+{held_lines}
+
+[계좌] 총평가 {pf.equity_krw:,}원, 현금 {pf.cash_krw:,}원"""
 
 
 def extract_json(text: str) -> str:
