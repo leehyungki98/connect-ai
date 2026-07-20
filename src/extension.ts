@@ -11837,6 +11837,10 @@ class CompanyDashboardPanel {
                 specialty: a.specialty,
                 tagline: a.tagline || '',
                 mission: a.mission || '',
+                /* 2026-07-20 — 소속 데스크. 대시보드가 팀별로 묶어 렌더한다.
+                   스윙팀(한국 스윙)과 미장팀(미국 장기)은 원리가 다른 조직이라
+                   한 줄에 섞어 놓으면 누가 어느 팀인지 알 수 없다. */
+                desk: a.desk || 'shared',
                 openTasks: myTasks.length,
                 autonomy: lvl,
                 autonomyLabel: AUTONOMY_LABELS[lvl] || 'Off',

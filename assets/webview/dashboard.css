@@ -428,9 +428,23 @@ body::before {
 /* v2.77 — Visual-first team grid. Cards become character tiles: face photo
    dominates, name overlaid on bottom gradient, status conveyed by colored
    border glow (no text). Hover reveals specialty in a tooltip layer. */
-.team-grid {
+/* 2026-07-20 — 데스크별 묶음 렌더로 전환.
+   컨테이너는 세로 흐름(라벨 → 카드행 → 라벨 → 카드행)이고, 카드 그리드는
+   .team-row 로 내려갔다. 기존 카드 스타일(.agent-card)은 그대로 재사용한다. */
+.team-grid { display: flex; flex-direction: column; gap: 14px; }
+.team-row {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 12px;
+}
+.team-desk-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  color: var(--muted, #8b9bb4); text-transform: uppercase;
+  padding-bottom: 2px; border-bottom: 1px solid var(--line, rgba(255,255,255,.08));
+}
+.team-desk-count {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(255,255,255,.07); color: var(--muted, #8b9bb4);
 }
 .agent-card {
   position: relative; aspect-ratio: 3/4;

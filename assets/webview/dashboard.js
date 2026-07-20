@@ -258,7 +258,16 @@ function render(s) {
     setText('tlOn', onCount);
     setText('tlOpt', optionalOff);
     setText('tlLock', lockedCount);
-    teamBody.innerHTML = s.agentTeam.map(a => {
+    /* 2026-07-20 — 데스크별 묶음 렌더.
+       스윙팀(한국 스윙)과 미장팀(미국 장기)은 원리가 다른 별개 조직이라
+       한 줄에 섞으면 누가 어느 팀인지 알 수 없다. 조직의 단일 출처는 DESKS.md.
+       desk 필드가 없는 구버전 데이터가 와도 '공용' 으로 떨어져 깨지지 않는다. */
+    const DESK_LABELS = {
+      swing: '스윙팀 · 한국 주식 (trading/)',
+      us: '미장팀 · 미국 주식 (us-longterm/)',
+      shared: '공용',
+    };
+    const renderCard = a => {
       const isLocked = (a.lockable && !a.hired);
       const isInactive = (!isLocked && a.togglable && !a.active);
       const photoHtml = a.profileImageUri
@@ -319,7 +328,19 @@ function render(s) {
         +     '<div class="agent-role-mini">' + esc(a.role || '') + '</div>'
         +   '</div>'
         + '</div>';
-    }).join('');
+    };
+    /* CEO 는 데스크 위에 있으므로 묶음 밖에 단독으로 둔다. */
+    const ceo = s.agentTeam.filter(a => a.id === 'ceo');
+    const rest = s.agentTeam.filter(a => a.id !== 'ceo');
+    let html = ceo.length ? '<div class="team-row">' + ceo.map(renderCard).join('') + '</div>' : '';
+    ['swing', 'us', 'shared'].forEach(deskKey => {
+      const members = rest.filter(a => (a.desk || 'shared') === deskKey);
+      if (!members.length) return;
+      html += '<div class="team-desk-label">' + esc(DESK_LABELS[deskKey] || deskKey)
+           +  ' <span class="team-desk-count">' + members.length + '</span></div>'
+           +  '<div class="team-row">' + members.map(renderCard).join('') + '</div>';
+    });
+    teamBody.innerHTML = html;
     /* v2.89.103+107 — 카드 클릭 분기:
        1. locked (Luna PIN 미통과) → openHirePinModal
        2. inactive (OPTIONAL OFF) → openActivateModal
