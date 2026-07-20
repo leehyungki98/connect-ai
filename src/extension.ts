@@ -8084,50 +8084,80 @@ function _tradingPositionsCardHtml(): string {
   </section>`;
 }
 
-/** 미장팀(us-longterm) 보유 — us-longterm/state/holdings.json (수량) +
- *  nav_log.jsonl 마지막 줄(NAV·비중·기준일). 표시 전용, 100% 모의. */
+/** 종목별 일별 평가금액 곡선 → 인라인 SVG 스파크라인. 점 2개 미만이면 빈 문자열.
+ *  한국 관례: 상승=빨강, 하락=파랑 (마지막 vs 처음). */
+function _usSparkline(vals: number[]): string {
+    if (!Array.isArray(vals) || vals.length < 2) return '';
+    const w = 76, h = 22, pad = 2;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const range = (max - min) || 1;
+    const pts = vals.map((v, i) => {
+        const x = pad + (i / (vals.length - 1)) * (w - 2 * pad);
+        const y = pad + (1 - (v - min) / range) * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const up = vals[vals.length - 1] >= vals[0];
+    const color = up ? '#e5484d' : '#3b82f6';   // 빨강 상승 / 파랑 하락
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex-shrink:0">
+      <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
+/** 미장팀(us-longterm) 보유 — 브로커 앱 스타일. run_daily 가 쓴
+ *  positions_view.json(평가금액·손익·손익률·매입) + positions_history.json(그래프).
+ *  표시 전용, 100% 모의. 미실행 시 폴백. */
 function _usLongtermPositionsCardHtml(): string {
     const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
-    // config 슬리브 매핑 (표시용 — 코드 의존 없이 하드코딩)
     const SLEEVE: Record<string, string> = { VOO: 'ETF', NVDA: '성장주', TSM: '성장주', META: '성장주' };
-    let rows = '';
+    // 한국 관례: 이익=빨강, 손실=파랑
+    const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
+    const sign = (n: number) => n > 0 ? '+' : '';
     let count = 0;
     let header = '';
+    let rows = '';
     try {
-        const hp = _usLongtermStatePath('holdings.json');
-        if (hp && fs.existsSync(hp)) {
-            const data = JSON.parse(fs.readFileSync(hp, 'utf-8'));
-            // 최신 NAV 스냅샷
-            let nav: any = null;
-            const np = _usLongtermStatePath('nav_log.jsonl');
-            if (np && fs.existsSync(np)) {
-                const lines = fs.readFileSync(np, 'utf-8').trim().split('\n').filter(Boolean);
-                if (lines.length) { try { nav = JSON.parse(lines[lines.length - 1]); } catch { /* skip */ } }
+        const vp = _usLongtermStatePath('positions_view.json');
+        if (vp && fs.existsSync(vp)) {
+            const v = JSON.parse(fs.readFileSync(vp, 'utf-8'));
+            // 그래프 history (종목별 곡선)
+            let hist: any = null;
+            const hp = _usLongtermStatePath('positions_history.json');
+            if (hp && fs.existsSync(hp)) { try { hist = JSON.parse(fs.readFileSync(hp, 'utf-8')); } catch { /* skip */ } }
+
+            for (const p of (v.positions || [])) {
+                count++;
+                const spark = hist && hist.series ? _usSparkline(hist.series[p.ticker]) : '';
+                rows += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.15)">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+                    <span><span style="font-weight:700">${esc(p.ticker)}</span> <span style="opacity:.5;font-size:11px">${esc(SLEEVE[p.ticker] || '')}</span></span>
+                    <span style="font-weight:600">₩${Number(p.value_krw).toLocaleString()}</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px;font-size:12px">
+                    <span style="opacity:.6">${Number(p.shares).toFixed(3)}주 · 매입 ₩${Number(p.cost_krw).toLocaleString()}</span>
+                    ${spark}
+                    <span style="color:${col(p.pnl_krw)};font-weight:600;text-align:right;min-width:96px">${sign(p.pnl_krw)}₩${Number(p.pnl_krw).toLocaleString()}<br><span style="font-size:11px">${sign(p.ret_pct)}${Number(p.ret_pct).toFixed(2)}%</span></span>
+                  </div>
+                </div>`;
             }
-            for (const b of Object.values<any>(data)) {
-                if (!b || !b.positions) continue;
-                for (const [sym, pos] of Object.entries<any>(b.positions)) {
-                    const sleeve = SLEEVE[sym] || '';
-                    rows += `<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px">
-                      <span style="font-weight:600;min-width:48px">${esc(sym)}</span>
-                      <span>${Number(pos.shares).toFixed(3)}주</span>
-                      <span style="opacity:.6">${esc(sleeve)}</span></div>`;
-                    count++;
-                }
-                if (typeof b.cash_usd === 'number') {
-                    rows += `<div style="display:flex;gap:12px;padding:6px 0;font-size:12px;opacity:.75">
-                      <span style="font-weight:600;min-width:48px">현금</span>
-                      <span>$${Number(b.cash_usd).toFixed(2)}</span>
-                      <span style="opacity:.6">USD</span></div>`;
-                }
+            if (typeof v.cash_usd === 'number') {
+                rows += `<div style="display:flex;justify-content:space-between;padding:8px 0;font-size:12px;opacity:.75">
+                  <span style="font-weight:600">현금 (USD)</span>
+                  <span>₩${Number(v.cash_krw).toLocaleString()} <span style="opacity:.6">($${Number(v.cash_usd).toFixed(2)})</span></span></div>`;
             }
-            if (nav) {
-                const w = nav.weights || {};
-                const wl = ['ETF', 'GROWTH', 'CASH']
-                    .filter(k => typeof w[k] === 'number')
-                    .map(k => `${k} ${(w[k] * 100).toFixed(1)}%`).join(' · ');
-                header = `NAV $${Number(nav.nav_usd).toLocaleString()} · ₩${Number(nav.nav_krw).toLocaleString()} · ${esc(nav.date)} 기준<br>${wl}`;
+            const t = v.total || {};
+            header = `평가 ₩${Number(t.value_krw).toLocaleString()} · <span style="color:${col(t.pnl_usd)}">평가손익 ${sign(t.pnl_usd)}$${Number(t.pnl_usd).toFixed(2)} (${sign(t.ret_pct)}${Number(t.ret_pct).toFixed(2)}%)</span><br><span style="opacity:.6">${esc(v.asof)} 종가 기준 · 환율 ${Number(v.usdkrw).toLocaleString()} · 실시간 아님(일봉)</span>`;
+        } else {
+            // 폴백: positions_view 없으면 수량만 (run_daily 미실행)
+            const hp = _usLongtermStatePath('holdings.json');
+            if (hp && fs.existsSync(hp)) {
+                const data = JSON.parse(fs.readFileSync(hp, 'utf-8'));
+                for (const b of Object.values<any>(data)) {
+                    for (const [sym, pos] of Object.entries<any>(b.positions || {})) {
+                        count++;
+                        rows += `<div style="display:flex;gap:12px;padding:6px 0;font-size:12px"><span style="font-weight:600;min-width:48px">${esc(sym)}</span><span>${Number(pos.shares).toFixed(3)}주</span></div>`;
+                    }
+                }
+                header = '평가금액은 <code>run_daily.py</code> 실행 후 표시됩니다';
             }
         }
     } catch { /* 표시 전용 */ }
@@ -8137,7 +8167,7 @@ function _usLongtermPositionsCardHtml(): string {
       <div class="card-title"><span class="title-icon">🏛️</span> 미장팀 보유 (모의)</div>
       <span class="badge">${count}</span>
     </div>
-    ${header ? `<div style="font-size:11px;opacity:.7;margin-bottom:8px;line-height:1.5">${header}</div>` : ''}
+    ${header ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px;line-height:1.6">${header}</div>` : ''}
     <div>${body}</div>
   </section>`;
 }
