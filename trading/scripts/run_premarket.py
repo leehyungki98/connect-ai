@@ -1,7 +1,8 @@
 """장 시작 전 1회 실행 (모의 전용).
 
-사용법: python scripts/run_premarket.py [--proposer codex|claude] [--judge claude|codex] [--dry-run]
---dry-run: 유니버스/스크리너/브레인까지만 돌리고 주문은 내지 않음.
+사용법: python scripts/run_premarket.py [--proposer codex|claude] [--judge claude|codex] [--dry-run] [--force]
+--dry-run: 유니버스/스크리너 상위 후보만 출력하고 브레인·주문은 건너뜀.
+--force:   당일 재실행 가드를 무시하고 강제 실행.
 필요: .env (KIS 키), pykrx (pip install pykrx), claude 또는 codex CLI 로그인.
 """
 import argparse
@@ -32,12 +33,43 @@ from autotrader.screener.universe import fetch_universe
 from smoke_kis import load_env  # 같은 scripts/ 안의 .env 로더 재사용
 
 
+def already_ran_today(log_path: Path, today: date) -> bool:
+    """오늘 프리마켓이 이미 완주했는지. 완주 기록만 카운트한다.
+
+    스케줄러 재발동·수동 재실행이 겹치면 같은 날 주문이 두 배로 나간다.
+    중간에 실패한 실행은 로그를 남기지 않으므로, 로그 유무를 기준으로 하면
+    "실패 후 재시도"는 정상적으로 통과한다.
+    """
+    if not log_path.exists():
+        return False
+    stamp = today.isoformat()
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            if json.loads(line).get("date") == stamp:
+                return True
+        except json.JSONDecodeError:
+            continue
+    return False
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--proposer", default="codex", choices=["codex", "claude"])
     p.add_argument("--judge", default="claude", choices=["claude", "codex"])
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--force", action="store_true",
+                   help="당일 재실행 가드 무시")
     args = p.parse_args()
+
+    # 주문을 내는 실행만 막는다. --dry-run 은 주문이 없으므로 몇 번이든 허용.
+    if not args.dry_run and not args.force:
+        log_path = STATE_DIR / "premarket_log.jsonl"
+        if already_ran_today(log_path, date.today()):
+            print("[premarket] 오늘 이미 실행됨 — 중복 주문 방지로 건너뜁니다.")
+            print("[premarket] 다시 돌리려면 --force 를 붙이세요.")
+            return 0
 
     # pykrx용 KRX 로그인: .env의 KRX_ID/KRX_PW를 환경변수로 주입
     if (ROOT / ".env").exists():

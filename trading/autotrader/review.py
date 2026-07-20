@@ -15,6 +15,28 @@ from typing import Callable
 from autotrader.brain.client import ask_text
 
 
+def _upsert_equity_log(log: Path, snapshot: dict) -> None:
+    """같은 날짜 항목은 덮어쓴다.
+
+    append 만 하면 하루에 두 번 마감을 돌릴 때 같은 날짜가 중복 적재되고,
+    집계·백테스트 비교에서 그 날 가중치가 배로 잡힌다. 날짜가 키다.
+    깨진 줄은 건드리지 않고 그대로 보존한다 (관찰 로그라 fail-open).
+    """
+    lines: list[str] = []
+    if log.exists():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                if json.loads(line).get("date") == snapshot["date"]:
+                    continue  # 오늘 것은 아래에서 새로 쓴다
+            except json.JSONDecodeError:
+                pass  # 파싱 불가한 줄은 보존
+            lines.append(line)
+    lines.append(json.dumps(snapshot, ensure_ascii=False))
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_postmarket(
     kis,
     state_dir: Path,
@@ -47,8 +69,7 @@ def run_postmarket(
     }
     log = state_dir / "equity_log.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+    _upsert_equity_log(log, snapshot)
 
     summary = {**snapshot, "review_file": None, "review_error": None}
     if llm_review:
