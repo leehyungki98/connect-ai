@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field, replace
@@ -77,6 +78,9 @@ def _default_test_runner(repo_root: Path) -> tuple[bool, str]:
     proc = subprocess.run(
         ["python3", "-m", "pytest", "tests/", "-q"],
         cwd=repo_root / "trading", capture_output=True, text=True, timeout=600,
+        # 테스트 실패 출력에 한국어가 섞인다 — 읽는 쪽도 UTF-8 로 고정.
+        encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     tail = (proc.stdout or "").strip().splitlines()[-1:] or [""]
     return proc.returncode == 0, tail[0]
@@ -242,5 +246,10 @@ class ProposalQueue:
         proc = subprocess.run(
             args, input=diff, cwd=self._repo,
             capture_output=True, text=True, timeout=60,
+            # diff 에는 한국어 주석과 em dash 가 들어간다. Windows 기본
+            # 인코딩(cp949)으로는 못 써서 stdin 쓰기 스레드가 죽고, git 은
+            # 입력을 영원히 기다리다 타임아웃난다. 승인 게이트 전체가
+            # 이 한 줄 때문에 멎었다.
+            encoding="utf-8", errors="replace",
         )
         return None if proc.returncode == 0 else (proc.stderr or "git apply error").strip()[:300]
