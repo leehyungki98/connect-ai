@@ -44,7 +44,13 @@ def run_postmarket(
     brain: str = "claude",
     runner: Callable | None = None,
     llm_review: bool = False,
+    review_dir: Path | None = None,
 ) -> dict:
+    """review_dir: 사후분석 저장 위치. 기본은 state_dir/reviews (하위호환).
+
+    운영 스크립트는 trading/ledger/reviews 를 넘긴다 — 사후분석은 재생성이
+    안 되는 학습 자산이라 커밋 금지 구역인 state/ 밖에 두고 git 으로 남긴다.
+    """
     state_dir = Path(state_dir)
     pf = kis.get_portfolio()
 
@@ -76,7 +82,7 @@ def run_postmarket(
         try:
             prompt = _build_review_prompt(state_dir, today, snapshot)
             text = ask_text(prompt, brain=brain, **({"runner": runner} if runner else {}))
-            out = state_dir / "reviews" / f"{today.isoformat()}.md"
+            out = (review_dir or state_dir / "reviews") / f"{today.isoformat()}.md"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(text, encoding="utf-8")
             summary["review_file"] = str(out)

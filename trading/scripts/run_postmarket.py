@@ -27,8 +27,11 @@ def main():
     env = load_env(ROOT / ".env")
     kis = KISPaperClient(env["KIS_APPKEY"], env["KIS_APPSECRET"], env["KIS_ACCOUNT"])
 
+    # 사후분석은 재생성 불가한 학습 자산 — 커밋 금지 구역인 state/ 밖에 남긴다.
+    LEDGER_DIR = ROOT / "ledger"
     s = run_postmarket(
-        kis, STATE_DIR, date.today(), brain=args.brain, llm_review=args.review
+        kis, STATE_DIR, date.today(), brain=args.brain, llm_review=args.review,
+        review_dir=LEDGER_DIR / "reviews",
     )
     write_gate_status(STATE_DIR, date.today(), s["equity_krw"])  # 게이트 상태판 갱신
     ret = s["daily_return_bp"]

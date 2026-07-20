@@ -1,0 +1,27 @@
+{
+ "claims": {
+  "stop_total": 433,
+  "one_bar_share": 0.5842956120092379,
+  "repeat_sym_trade_share": 0.9214780600461894,
+  "repeat_sym_pnl_share": 0.9269860373855565,
+  "multi_stop_days(>=3)": 62,
+  "multi_day_pnl_share": 0.6761424290105772
+ },
+ "sigma": {
+  "baseline_sig5_median": 0.021982125344938614,
+  "threshold(2x)": 0.04396425068987723,
+  "sig5_cross": "2026-03-04",
+  "sig20_cross": "2026-03-04",
+  "lag_trading_days": 0,
+  "h1_med_sig20": 0.02897714132723485,
+  "h2_med_sig20": 0.037449010189437484,
+  "h1_med_sig5": 0.021982125344938614,
+  "h2_med_sig5": 0.027825929056184723,
+  "h1_floor_bind": 0.010050251256281407,
+  "h2_floor_bind": 0.005050505050505051,
+  "h1_cap_bind": 0.1407035175879397,
+  "h2_cap_bind": 0.25757575757575757,
+  "understate_ratio_h2": 0.7950626136259821,
+  "understate_ratio_h1": 0.7850419393432515
+ }
+}

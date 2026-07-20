@@ -22,7 +22,8 @@ from autotrader.improve import run_improve_cycle
 from autotrader.proposals import ProposalQueue
 
 
-def build_perf_summary(state_dir: Path, max_lines: int = 14) -> str:
+def build_perf_summary(state_dir: Path, max_lines: int = 14,
+                       ledger_dir: Path | None = None) -> str:
     parts = []
     eq = state_dir / "equity_log.jsonl"
     if eq.exists():
@@ -32,7 +33,8 @@ def build_perf_summary(state_dir: Path, max_lines: int = 14) -> str:
     if pm.exists():
         lines = pm.read_text(encoding="utf-8").splitlines()[-3:]
         parts.append("[장 시작 전 실행 리포트 (최근 3회)]\n" + "\n".join(lines))
-    reviews = sorted((state_dir / "reviews").glob("*.md")) if (state_dir / "reviews").exists() else []
+    rv = (ledger_dir / "reviews") if ledger_dir else (state_dir / "reviews")
+    reviews = sorted(rv.glob("*.md")) if rv.exists() else []
     if reviews:
         parts.append("[최근 사후분석]\n" + reviews[-1].read_text(encoding="utf-8")[:2_000])
     return "\n\n".join(parts) or "(운용 기록 없음 — 개선안을 내지 마라)"
@@ -44,7 +46,7 @@ def main():
     p.add_argument("--coder", default="opus", choices=["opus", "claude"])
     args = p.parse_args()
 
-    summary = build_perf_summary(STATE_DIR)
+    summary = build_perf_summary(STATE_DIR, ledger_dir=ROOT / "ledger")
     queue = ProposalQueue(
         base_dir=STATE_DIR / "proposals",
         repo_root=ROOT.parent,  # connect-ai 저장소 루트 (git apply 기준)

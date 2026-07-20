@@ -33,7 +33,10 @@ from autotrader.config import INITIAL_CAPITAL_KRW, STATE_DIR
 RUN_CAP = 40
 CACHE = STATE_DIR / "bars_cache.json"
 LEDGER = STATE_DIR / "sweep_runs.jsonl"
-EXPERIMENTS = STATE_DIR / "experiments.md"
+# 실험 원장·진단은 재생성 불가한 학습 자산 — 커밋 금지 구역인 state/ 밖에 둔다.
+LEDGER_DIR = ROOT / "ledger"
+EXPERIMENTS = LEDGER_DIR / "experiments.md"
+DIAGNOSIS = LEDGER_DIR / "diagnosis.json"
 COMPARE_JSON = STATE_DIR / "backtest_compare_20250716_20260716.json"
 V0_FULL_JSON = STATE_DIR / "backtest_20250716_20260716.json"
 START, END = "20250716", "20260716"
@@ -328,9 +331,10 @@ def cmd_diagnose() -> int:
           f"/후반 {s['h2_floor_bind']:.0%},"
           f" 상한 10% 바인딩 전반 {s['h1_cap_bind']:.0%}/후반 {s['h2_cap_bind']:.0%}")
 
-    (STATE_DIR / "diagnosis.json").write_text(
+    DIAGNOSIS.parent.mkdir(parents=True, exist_ok=True)
+    DIAGNOSIS.write_text(
         json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\n[diagnose] 저장: {STATE_DIR / 'diagnosis.json'} (백테스트 실행 0회)")
+    print(f"\n[diagnose] 저장: {DIAGNOSIS} (백테스트 실행 0회)")
     return 0
 
 
@@ -431,8 +435,8 @@ def cmd_report() -> int:
         (candidates if passes_gate(e["전반"], e["후반"], v01, v02) else rejected).append(entry)
     candidates.sort(key=lambda x: robust_key(x[1], x[2]), reverse=True)
 
-    diag = json.loads((STATE_DIR / "diagnosis.json").read_text(encoding="utf-8")) \
-        if (STATE_DIR / "diagnosis.json").exists() else {}
+    diag = json.loads(DIAGNOSIS.read_text(encoding="utf-8")) \
+        if DIAGNOSIS.exists() else {}
 
     def fmt_row(lbl, s1, s2):
         return (f"| {lbl} | {s1['ret']:+.1%} | {s1['mdd']:.1%} | {s1['sharpe']:+.2f}"
