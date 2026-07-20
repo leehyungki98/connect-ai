@@ -21,6 +21,11 @@ from autotrader.screener.ranking import RankedSymbol
 # 스킬 메뉴를 반환할 때가 있다(프롬프트로 막아도 재발). --output-schema로
 # 응답 형태를 강제하면 구조적으로 차단된다.
 _CODEX_SCHEMA = Path(__file__).with_name("codex_output_schema.json")
+# 호출 용도마다 응답 형태가 다르다. 매매 결정은 decisions/exits, 개선 제안은
+# improvements, 판정은 verdicts. 스키마를 하나로 고정하면 나머지 용도가
+# 구조적으로 실패한다 — 실제로 개선 사이클이 매번 0건이었던 원인이다.
+IMPROVE_SCHEMA = Path(__file__).with_name("improve_output_schema.json")
+JUDGE_SCHEMA = Path(__file__).with_name("judge_output_schema.json")
 
 CLI_COMMANDS = {
     "claude": ["claude", "-p"],   # 프롬프트는 마지막 인자
@@ -81,8 +86,16 @@ def extract_json(text: str) -> str:
     return text[start : end + 1]
 
 
-def _run_cli(brain: str, prompt: str) -> str:
+def _run_cli(brain: str, prompt: str, schema: Path | None = None) -> str:
+    """schema: codex 의 --output-schema 를 이 호출에 한해 교체한다.
+
+    codex 는 스키마로 응답 형태를 강제하므로, 용도에 맞는 스키마를 주지 않으면
+    프롬프트가 무엇을 요구하든 매매 결정 형식으로 답한다. claude 계열은
+    스키마 인자가 없어 이 값을 무시한다.
+    """
     argv = CLI_COMMANDS[brain]
+    if brain == "codex" and schema is not None:
+        argv = ["codex", "exec", "--output-schema", str(schema)]
     exe = shutil.which(argv[0])  # Windows에서 PATHEXT 적용 (codex.cmd 등)
     if exe is None:
         raise RuntimeError(f"{brain} CLI not found on PATH")

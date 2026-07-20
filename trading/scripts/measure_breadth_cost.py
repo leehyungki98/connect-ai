@@ -66,6 +66,29 @@ def forward_return(series: list, i: int, horizon: int) -> float | None:
     return series[i + horizon][1] / series[i][1] - 1
 
 
+def managed_return(bars: list, i: int, horizon: int,
+                   stop: float, target: float) -> float | None:
+    """손절·목표가를 적용한 수익률 — 전략이 실제로 겪는 값.
+
+    원시 선도수익률은 손절을 무시해서 최악값을 과장한다. 장중 고가/저가로
+    먼저 닿는 쪽을 판정하되, 같은 봉에서 둘 다 닿으면 손절을 먼저 본다
+    (보수적 가정 — 실제 순서를 일봉으로는 알 수 없다).
+    """
+    if i + horizon >= len(bars):
+        return None
+    entry = bars[i][4]
+    if entry <= 0:
+        return None
+    stop_px, target_px = entry * (1 - stop), entry * (1 + target)
+    for k in range(i + 1, i + horizon + 1):
+        _, _, hi, lo, close, _ = bars[k]
+        if lo <= stop_px:
+            return -stop
+        if hi >= target_px:
+            return target
+    return bars[i + horizon][4] / entry - 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--horizon", type=int, default=10, help="보유 거래일 수")

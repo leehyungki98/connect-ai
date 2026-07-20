@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdicts"],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "verdict", "criterion", "reason"],
+        "properties": {
+          "symbol": {"type": "string"},
+          "verdict": {"type": "string", "enum": ["pass", "reject"]},
+          "criterion": {"type": ["string", "null"], "enum": ["K3", "K4", null]},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}

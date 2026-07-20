@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["improvements"],
+  "properties": {
+    "improvements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["analysis", "diagnosis", "proposal"],
+        "properties": {
+          "analysis": {"type": "string"},
+          "diagnosis": {"type": "string"},
+          "proposal": {"type": "string"}
+        }
+      }
+    }
+  }
+}

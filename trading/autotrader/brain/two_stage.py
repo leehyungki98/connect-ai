@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from autotrader.brain.client import Candidate, _run_cli, extract_json
+from autotrader.brain.client import JUDGE_SCHEMA, Candidate, _run_cli, extract_json
 from autotrader.brain.schema import (
     EntryDecision,
     ExitDecision,
@@ -238,7 +238,8 @@ def run_two_stage(
     entries: list[EntryDecision] = []
     errors: tuple[str, ...] = ()
     if remaining:  # 판정 대상 0개면 판정자 호출 생략 (비용 0)
-        run = judge_runner or _run_cli
+        # 판정도 codex 를 쓸 수 있으므로 용도에 맞는 스키마를 준다.
+        run = judge_runner or (lambda b, pr: _run_cli(b, pr, schema=JUDGE_SCHEMA))
         try:
             raw = run(judge_brain, build_judge_prompt(remaining, candidates, pf))
             ok, errs, verdicts = validate_judge_output(

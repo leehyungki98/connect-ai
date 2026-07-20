@@ -17,7 +17,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable
 
-from autotrader.brain.client import _run_cli, extract_json
+from autotrader.brain.client import IMPROVE_SCHEMA, _run_cli, extract_json
 from autotrader.proposals import ActionResult, ProposalQueue
 
 MAX_IMPROVEMENTS = 3
@@ -81,7 +81,8 @@ def propose_improvements(
     brain: str = "codex",
     runner: Callable[[str, str], str] | None = None,
 ) -> tuple[tuple[ImproveDraft, ...], tuple[str, ...]]:
-    run = runner or _run_cli
+    # codex 기본 스키마는 매매 결정용이라 improvements 를 낼 수 없다.
+    run = runner or (lambda b, pr: _run_cli(b, pr, schema=IMPROVE_SCHEMA))
     try:
         raw = run(brain, build_improve_prompt(perf_summary))
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
@@ -126,15 +127,25 @@ def implement_and_submit(
     queue: ProposalQueue,
     brain: str = "opus",
     runner: Callable[[str, str], str] | None = None,
+    errors: list[str] | None = None,
 ) -> ActionResult | None:
-    """코다리 호출 → diff 추출 → 큐 제출. diff 추출 실패 시 None (제출 없음)."""
+    """코다리 호출 → diff 추출 → 큐 제출. 실패 시 None.
+
+    실패 사유는 errors 에 남긴다. 예전엔 조용히 None 만 반환해서, CLI 가
+    죽은 건지 모델이 diff 펜스를 안 낸 건지 로그만 보고는 구분할 수 없었다.
+    """
+    errors = errors if errors is not None else []
     run = runner or _run_cli
     try:
         raw = run(brain, build_coder_prompt(draft))
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        errors.append(f"코다리 CLI 실패: {e}"[:300])
         return None
     out = extract_coder_output(raw)
     if out is None:
+        errors.append(
+            f"코다리 응답에 ```diff 펜스 없음 (길이 {len(raw)}). head: {raw[:200]!r}"
+        )
         return None
     summary, diff = out
     return queue.submit(
@@ -158,7 +169,8 @@ def run_improve_cycle(
     report = {"drafts": len(drafts), "submitted": [], "rejected": [],
               "failed": 0, "errors": list(errors)}
     for d in drafts:
-        r = implement_and_submit(d, queue, coder_brain, coder_runner)
+        r = implement_and_submit(d, queue, coder_brain, coder_runner,
+                                 errors=report["errors"])
         if r is None:
             report["failed"] += 1
         elif r.ok:
