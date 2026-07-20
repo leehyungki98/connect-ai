@@ -7048,6 +7048,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 윈도우 콘솔 기본 인코딩(cp949)에 없는 문자(em dash 등)로 print 가
+# UnicodeEncodeError 로 죽는 걸 막는다. 자식 스크립트에도 물려준다.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "${name}.json"
 ARGV = ${JSON.stringify(argv)}
@@ -7087,7 +7096,9 @@ def main():
     print("[>] " + " ".join(cmd))
     print("[>] cwd = " + str(root))
     print("-" * 60)
-    return subprocess.call(cmd, cwd=str(root))
+    env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return subprocess.call(cmd, cwd=str(root), env=env)
 
 
 if __name__ == "__main__":
