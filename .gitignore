@@ -10,6 +10,9 @@ releases/
 # trading engine (절대규칙 4)
 trading/state/
 trading/.env
+# us-longterm 미장팀 (동일 관례)
+us-longterm/state/
+us-longterm/.env
 __pycache__/
 .pytest_cache/
 *.pyc
