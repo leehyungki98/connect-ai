@@ -111,10 +111,21 @@ def _run_cli(brain: str, prompt: str, schema: Path | None = None) -> str:
     exe = shutil.which(argv[0])  # Windows에서 PATHEXT 적용 (codex.cmd 등)
     if exe is None:
         raise RuntimeError(f"{brain} CLI not found on PATH")
+
+    # codex 는 Windows 에서 codex.CMD 배치 파일로 실행된다. 여러 줄 프롬프트를
+    # 인자로 넘기면 cmd.exe 를 거치며 잘려서, 모델이 첫 줄만 보고 "요청을
+    # 보내주세요" 하거나 스킬 선택 메뉴를 띄운다 (2026-07-20 실측: 후보 데이터가
+    # 프롬프트에 있는데도 "데이터를 보내주시면"이라고 답했다).
+    # `-` 를 주고 stdin 으로 넘기면 셸 파싱을 타지 않는다.
+    if brain == "codex":
+        cmd, stdin_text = [exe] + argv[1:] + ["-"], prompt
+    else:
+        cmd, stdin_text = [exe] + argv[1:] + [prompt], None
     proc = subprocess.run(
-        [exe] + argv[1:] + [prompt], capture_output=True, text=True,
+        cmd, input=stdin_text, capture_output=True, text=True,
         encoding="utf-8", errors="replace",  # Windows cp949 디코딩 오류 방지
-        timeout=CLI_TIMEOUT_SEC, stdin=subprocess.DEVNULL,
+        timeout=CLI_TIMEOUT_SEC,
+        **({} if stdin_text is not None else {"stdin": subprocess.DEVNULL}),
     )
     if proc.returncode != 0:
         detail = " | ".join(
