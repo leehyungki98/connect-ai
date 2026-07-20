@@ -103,6 +103,42 @@ class TestCoverageUniverse:
             assert t in intel_sources.UNIVERSE, f"{t} 가 UNIVERSE 에 없음"
 
 
+class TestEmergingThemes:
+    """신흥 테마(수소·양자) — 키워드로 판을 잡고 대표주도 등록 (2026-07-21)."""
+
+    def test_hydrogen_keyword_tagged_without_ticker(self):
+        """대표주 언급 없이 '수소' 테마만 걸려도 태그된다 — 새 대장주 대비."""
+        r = intel_sources.match_relevance(
+            "New green hydrogen electrolyzer plant announced in Texas", "")
+        assert "HYDROGEN" in r
+
+    def test_hydrogen_representative_ticker(self):
+        r = intel_sources.match_relevance("Plug Power secures new fuel cell order", "")
+        assert "PLUG" in r
+        assert "HYDROGEN" in r        # 'fuel cell' 키워드도 동시 매칭
+
+    def test_quantum_keyword_and_ticker(self):
+        r = intel_sources.match_relevance(
+            "IonQ advances quantum computing with new qubit design", "")
+        assert "IONQ" in r
+        assert "QUANTUM" in r
+
+    def test_bloom_energy_matched(self):
+        r = intel_sources.match_relevance("Bloom Energy turns free cash flow positive", "")
+        assert "BE" in r
+
+    def test_theme_tier_classification(self):
+        """테마 태그·대표주는 tier 'theme' — 투기적임을 리뷰에서 구분."""
+        assert intel_sources.classify_tier("HYDROGEN") == "theme"
+        assert intel_sources.classify_tier("QUANTUM") == "theme"
+        assert intel_sources.classify_tier("PLUG") == "theme"
+        assert intel_sources.classify_tier("IONQ") == "theme"
+
+    def test_theme_ticker_in_universe(self):
+        for t in ("PLUG", "BE", "FCEL", "IONQ", "RGTI", "QBTS"):
+            assert t in intel_sources.UNIVERSE
+
+
 class TestWordBoundary:
     """부분 문자열 오탐 방지 — 후보군을 넓히면 짧은 별칭이 위험해진다."""
 

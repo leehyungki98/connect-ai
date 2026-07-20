@@ -52,7 +52,7 @@ UNIVERSE = {
     "NFLX": ["netflix"],
 }
 
-# 종목 무관 매크로·지정학·테마 — '판 전체' 커버 (미래 리밸런싱 대비).
+# 종목 무관 매크로·지정학 — '판 전체' 커버 (미래 리밸런싱 대비).
 MACRO_KEYWORDS = [
     "taiwan", "china", "semiconductor", "semiconductors", "chip", "chips",
     "gpu", "gpus", "data center", "data centers", "cloud computing",
@@ -60,6 +60,33 @@ MACRO_KEYWORDS = [
     "federal reserve", "interest rate", "interest rates", "rate cut",
     "inflation", "antitrust", "tariff", "tariffs",
 ]
+
+# 신흥 테마 — 대장주가 확정 안 됐고 계속 바뀐다 (2026-07-21, 사용자 요청: 수소 필수).
+# 키워드로 '판 자체' 를 잡고(새 대장주가 떠도 안 놓침) + 현재 대표주도 등록한다.
+# ⚠ 이 테마주 대부분은 지금 3기준(수익성·성장·밸류)을 통과 못 한다(적자·초기매출).
+#    정세 추적은 '기록'이지 매수 신호가 아니다 — TSLA 를 기각하고도 관찰하는 것과 같다.
+#    테마가 성숙하거나(예: BE 는 FCF 흑자 전환) 데스크 방향이 바뀔 때 이력이 있게 한다.
+# 새 테마 추가는 여기 한 줄. 매칭되면 테마명 태그(예 "HYDROGEN")가 붙는다.
+THEMES = {
+    "HYDROGEN": {
+        "keywords": ["hydrogen", "fuel cell", "fuel-cell", "electrolyzer",
+                     "green ammonia"],
+        "tickers": {"PLUG": ["plug power"], "BE": ["bloom energy"],
+                    "FCEL": ["fuelcell"]},
+    },
+    "QUANTUM": {
+        "keywords": ["quantum computing", "quantum computer", "qubit",
+                     "quantum annealing"],
+        "tickers": {"IONQ": ["ionq"], "RGTI": ["rigetti"],
+                    "QBTS": ["d-wave", "dwave"]},
+    },
+}
+
+# 테마 대표주를 UNIVERSE 에 합류 (티커 매칭용). 계층은 classify_tier 가 "theme" 로.
+THEME_TICKERS = {t: a for spec in THEMES.values()
+                 for t, a in spec["tickers"].items()}
+for _t, _a in THEME_TICKERS.items():
+    UNIVERSE.setdefault(_t, _a)
 
 
 def _has_word(text: str, term: str) -> bool:
@@ -83,6 +110,11 @@ def match_relevance(title: str, summary: str) -> list:
         if any(_has_word(text, a) for a in aliases):
             matched.add(ticker)
 
+    # 신흥 테마 — 키워드가 걸리면 테마명 태그 (종목 특정 안 돼도 수집)
+    for theme, spec in THEMES.items():
+        if any(_has_word(text, k) for k in spec["keywords"]):
+            matched.add(theme)
+
     if any(_has_word(text, k) for k in MACRO_KEYWORDS):
         matched.add("MACRO")
 
@@ -94,6 +126,8 @@ def classify_tier(ticker: str) -> str:
     config import 는 함수 안에서(순수 로직 모듈이 config 에 상시 의존하지 않게)."""
     if ticker == "MACRO":
         return "macro"
+    if ticker in THEMES or ticker in THEME_TICKERS:
+        return "theme"      # 신흥 테마 태그(HYDROGEN) 또는 대표주(PLUG) — 투기적, 3기준 미통과 다수
     try:
         from .config import BUCKETS, SNAPSHOT_WATCHLIST
     except Exception:
