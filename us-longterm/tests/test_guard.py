@@ -52,6 +52,15 @@ def test_single_stock_cap_blocked(monkeypatch, tmp_path):
     assert not res.ok and any("단일 종목 상한" in r for r in res.reasons)
 
 
+def test_commission_drag_on_cap_is_tolerated(monkeypatch, tmp_path):
+    """최초 배분: 수수료 드래그로 목표 10% 가 10.0X% 로 보여도 통과해야 한다."""
+    from longcore.rebalance import make_orders
+    _tmp_state(monkeypatch, tmp_path)
+    h = cash_only_holding(cash=21_000.0)
+    orders = make_orders(h, PRICES, CFG, ["CASH"])
+    assert guard.check(orders, h, PRICES, CFG, 25).ok
+
+
 def test_bad_order_hygiene(monkeypatch, tmp_path):
     _tmp_state(monkeypatch, tmp_path)
     h = cash_only_holding()

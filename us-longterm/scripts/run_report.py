@@ -10,6 +10,8 @@ from longcore.config import BENCHMARK, BUCKETS, FX_TICKER  # noqa: E402
 from longcore.data import fetch_history  # noqa: E402
 from longcore.portfolio import nav_usd  # noqa: E402
 
+import pandas as pd  # noqa: E402
+
 
 def main() -> int:
     holdings = store.load_holdings()
@@ -22,13 +24,16 @@ def main() -> int:
             continue
         inc = holding["inception"]
         tickers = sorted({t for comp in cfg["sleeves"].values() for t in comp})
-        hist = fetch_history(tickers + [BENCHMARK, FX_TICKER],
-                             inc["date"]).ffill()
+        # 설립 당일 실행 대비: 설립일 7일 전부터 조회 후 설립일 이후 첫 값을 기준점으로
+        start = (pd.Timestamp(inc["date"]) - pd.Timedelta(days=7)).date().isoformat()
+        hist = fetch_history(tickers + [BENCHMARK, FX_TICKER], start).ffill()
         asof = hist.index[-1].date()
         prices = {t: float(hist[t].iloc[-1]) for t in tickers}
         usdkrw = float(hist[FX_TICKER].iloc[-1])
-        spy0 = float(hist[BENCHMARK].dropna().iloc[0])
-        spy1 = float(hist[BENCHMARK].iloc[-1])
+        spy = hist[BENCHMARK].dropna()
+        since = spy[spy.index >= inc["date"]]
+        spy0 = float(since.iloc[0]) if not since.empty else float(spy.iloc[-1])
+        spy1 = float(spy.iloc[-1])
 
         nav = nav_usd(holding, prices)
         r_usd = nav / inc["capital_usd"] - 1

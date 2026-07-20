@@ -51,15 +51,18 @@ def check(orders, holding: dict, prices: dict, bucket_cfg: dict,
     if cash < -_TOL:
         reasons.append(f"현금 음수 방지: 체결 후 현금 {cash:.2f} USD")
 
-    # 단일 종목 상한 (성장주) — 체결 후 상태 기준
+    # 단일 종목 상한 (성장주) — 체결 후 상태 기준.
+    # 수수료가 NAV 를 깎아 목표 10% 가 산술적으로 10.0X% 로 보이는 드래그는
+    # 위반이 아니다. 최대 회전율(전량 매도+매수 = 2×NAV) 기준 상계: cap×(1+2c).
     nav_after = cash + sum(q * prices[t] for t, q in positions.items())
     if nav_after > 0:
         growth_tickers = set(bucket_cfg["sleeves"].get("GROWTH", {}))
-        cap = bucket_cfg["max_single_stock"]
+        cap = bucket_cfg["max_single_stock"] * (1 + 2 * c)
         for t in growth_tickers:
             w = positions.get(t, 0.0) * prices.get(t, 0.0) / nav_after
             if w > cap + _TOL:
                 reasons.append(
-                    f"단일 종목 상한 위반: {t} {w:.2%} > {cap:.0%}")
+                    f"단일 종목 상한 위반: {t} {w:.2%} > 허용 {cap:.2%} "
+                    f"(상한 {bucket_cfg['max_single_stock']:.0%} + 수수료 상계)")
 
     return GateResult(not reasons, tuple(reasons))
