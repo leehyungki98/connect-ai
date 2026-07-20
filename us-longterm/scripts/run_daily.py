@@ -40,7 +40,7 @@ def main() -> int:
         growth = sorted(cfg["sleeves"].get("GROWTH", {}))
         cap = cfg["max_single_stock"]
 
-        store.append_jsonl("nav_log.jsonl", {
+        nav_record = {
             "date": asof.isoformat(), "bucket": bucket,
             "nav_usd": round(fx["nav_usd"], 2), "nav_krw": round(fx["nav_krw"], 0),
             "usdkrw": round(usdkrw, 2),
@@ -48,7 +48,9 @@ def main() -> int:
             "deviations": {k: round(v, 4) for k, v in dev.items()},
             "effective_weights": {t: round(eff.get(t, 0.0), 4) for t in growth},
             "band_breached": breached,
-        })
+        }
+        store.append_jsonl("nav_log.jsonl", nav_record)   # state/ 원본 (append)
+        store.mirror_nav_record(nav_record)               # ledger/ 미러 (git 추적)
         store.append_jsonl("fx_log.jsonl", {
             "date": asof.isoformat(), "usdkrw": round(usdkrw, 4),
         })
