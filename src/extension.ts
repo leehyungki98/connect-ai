@@ -7603,7 +7603,7 @@ async function prefetchAgentRealtimeData(agentId: string): Promise<string> {
     if (gotRealData) break;
     try {
       const r = await new Promise<{ exitCode: number; output: string; timedOut: boolean }>((resolve) => {
-        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(c.tool)}`, toolsDir, () => { /* silent */ }, 90000)
+        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(c.tool)}`, toolsDir, () => { /* silent */ }, 90000, 'both', { PYTHONIOENCODING: 'utf-8' })
           .then(resolve)
           .catch(() => resolve({ exitCode: -1, output: '', timedOut: false }));
       });
@@ -19796,7 +19796,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         const toolTimeoutMs = _LONG_RUNNING_TOOLS.has(entry.tool) ? 900000 : 90000;
         try {
             /* v2.89.50 — stdout만 캡쳐. stderr (진행 메시지·DeprecationWarning) 채팅에 안 끼게. */
-            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, toolTimeoutMs, 'stdout');
+            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, toolTimeoutMs, 'stdout', { PYTHONIOENCODING: 'utf-8' });
         } catch (e: any) {
             post({ type: 'agentEnd', agent: entry.agentId });
             post({ type: 'error', value: `⚠️ 도구 실행 에러: ${e?.message || e}` });
