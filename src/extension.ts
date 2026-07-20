@@ -2843,8 +2843,11 @@ async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
             }
             /* PYTHONIOENCODING — 윈도우 파이썬은 콘솔 기본 인코딩(cp949)으로 찍어서
                UTF-8로 읽는 이쪽에서 한글이 깨진다. 자식 프로세스까지 상속된다. */
+            /* 15분. 프리마켓은 KRX 유니버스 수집 + 브레인 2단계(codex→claude, 각
+               최대 5분)라 실측 2분, 최악 10분대까지 간다. 기존 120초는 정상 실행이
+               타임아웃으로 죽는 값이었다. */
             const r = await runCommandCaptured(
-                `${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 120000,
+                `${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 900000,
                 'both', { PYTHONIOENCODING: 'utf-8' },
             );
             const out = (r.output || '').trim();
@@ -7575,6 +7578,12 @@ async function prefetchAgentRealtimeData(agentId: string): Promise<string> {
      현빈이 환각 없이 진짜 숫자로 분석. 유튜브(레오) 와 동일 패턴. */
   if (agentId === 'business') {
     candidates.push({ tool: 'paypal_revenue.py', label: 'PayPal 매출 분석 (게임·프로젝트별, 실제 거래 데이터)' });
+  }
+  /* 비서 prefetch — 영숙에겐 trading/state 를 읽을 도구가 없어서 "오늘 매매했어?"
+     질문에 "기록 없음"을 사실처럼 지어내는 사고가 실제로 났다. 답하기 전에
+     실제 파일을 읽어 프롬프트에 넣는다. */
+  if (agentId === 'secretary') {
+    candidates.push({ tool: 'trading_status.py', label: '매매 현황 (trading/state 실제 파일)' });
   }
   if (candidates.length === 0) return '';
   const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
