@@ -5,6 +5,16 @@
 .github/**
 **/.env
 **/.env.*
+# 2026-07-21 — 운영 데이터(state/)는 배포물에 넣지 않는다.
+# 이유가 용량만이 아니다: _resolveTradingRoot() 는 워크스페이스 사본을 먼저 찾고
+# 번들 사본은 최후 수단이다. 만약 그 최후 수단이 발동하면 **패키징 시점의 낡은
+# 보유 포지션**을 현재 상태인 양 대시보드에 표시하게 된다. 없으면 빈 값으로
+# 정상 폴백한다 (읽기 경로가 전부 existsSync 가드).
+**/state/**
+# 파이썬 빌드 산물 — 순수 용량
+**/__pycache__/**
+**/.pytest_cache/**
+**/*.pyc
 ARCHITECTURE.md
 src/**
 # v2.89.84 — extension_download_site/ 와 releases/ 디렉토리 삭제됨.
