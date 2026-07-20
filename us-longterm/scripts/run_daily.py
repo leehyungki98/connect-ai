@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from longcore import store  # noqa: E402
+from longcore.clock import is_partial_bar, us_eastern_now  # noqa: E402
 from longcore.config import BUCKETS, FX_TICKER, INDEX_LOOKTHROUGH  # noqa: E402
 from longcore.data import fetch_history  # noqa: E402
 from longcore.portfolio import effective_weights, fx_exposure, weights  # noqa: E402
@@ -29,6 +30,13 @@ def main() -> int:
         asof = hist.index[-1].date()
         prices = {t: float(hist[t].iloc[-1]) for t in tickers}
         usdkrw = float(hist[FX_TICKER].iloc[-1])
+
+        # 데이터 품질 가드 (기록은 그대로 진행 — 출력만): 미국장이 열려 있는
+        # 동안 돌리면 오늘 일봉이 미완성(장중 값)일 수 있다. 마감 후 다시 돌리면
+        # ledger 미러가 (date,bucket) 멱등으로 이 값을 교정한다.
+        if is_partial_bar(asof, us_eastern_now()):
+            print(f"[{bucket}] ⚠ {asof} 는 아직 장중일 수 있다 — 이 종가는 미완성일 "
+                  f"가능성. 미국장 마감(한국시간 새벽 5~6시) 후 다시 돌리면 교정됨.")
 
         w = weights(holding, prices, cfg["sleeves"])
         fx = fx_exposure(holding, prices, usdkrw)

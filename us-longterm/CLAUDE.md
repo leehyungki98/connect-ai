@@ -49,7 +49,11 @@
 ## 운용 명령
 - 최초 1회 (데스크 설립): `python scripts/run_rebalance.py --init` — 보유가 비어 있을
   때만 허용되는 최초 배분. 분기 점검일 게이트만 면제, 나머지 안전층 전부 적용.
-- 매일: `python scripts/run_daily.py` (실효 비중 여유분 표시)
+- 매일: `python scripts/run_daily.py` (실효 비중 여유분 표시).
+  **실행 시각 주의 — 미장은 스윙과 정반대**: 미국장 마감 후(한국시간 새벽 5~6시)
+  ~ 다음 개장 전에 돌린다. 한국 아침이 자연스럽다(밤새 닫힌 종가 캡처). 미국장
+  **열려 있는 동안(밤 10:30~새벽 5시)** 돌리면 미완성 일봉이 잡혀 경고가 뜬다 —
+  마감 후 재실행하면 ledger 미러가 교정한다 (`longcore/clock.py`, DST 자동 반영).
 - **월 1회 이상**: `python scripts/run_snapshot.py` — 재무 스냅샷 적재.
   선행PER·PEG 는 시점 데이터라 오늘 안 찍으면 영원히 복구 불가다 (ledger/fundamentals/)
 - 분기 리뷰(점검일 전): `python scripts/run_review.py` — 논지 재판정 + 정세 집계.
