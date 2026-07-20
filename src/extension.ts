@@ -8077,7 +8077,7 @@ function _tradingPositionsCardHtml(): string {
     const body = rows || '<div class="empty subtle">보유 포지션 없음 (premarket 실행 후 갱신)</div>';
     return `<section class="card span-7" id="tradingPositionsCard">
     <div class="card-head">
-      <div class="card-title"><span class="title-icon">📌</span> 라이브 포지션 (모의)</div>
+      <div class="card-title"><span class="title-icon">📈</span> 스윙팀 보유 (모의)</div>
       <span class="badge">${count}</span>
     </div>
     <div>${body}</div>
@@ -21450,8 +21450,10 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 const cmdLine = isAuto
                     ? `*컨텍스트:* 회사 목표·메모리 검토 후 자율적으로 일거리 결정`
                     : `*명령:* ${prompt.slice(0, 200)}`;
-                const tgText = `${header}\n\n${cmdLine}\n\n*브리프:* ${plan.brief}\n\n*완료한 에이전트:*\n${plan.tasks.map(t => `• ${AGENTS[t.agent]?.emoji} ${AGENTS[t.agent]?.name}`).join('\n')}\n\n${finalReport.slice(0, 1500)}\n\n_세션: ${path.basename(sessionDir)}_`;
-                sendTelegramReport(tgText).then(ok => {
+                /* v2.89.167 — 잘림 수정: finalReport 를 1500자로 자르지 않고,
+                   sendTelegramLong 으로 3800자 경계에서 분할 전송한다 (n/m 표기). */
+                const tgText = `${header}\n\n${cmdLine}\n\n*브리프:* ${plan.brief}\n\n*완료한 에이전트:*\n${plan.tasks.map(t => `• ${AGENTS[t.agent]?.emoji} ${AGENTS[t.agent]?.name}`).join('\n')}\n\n${finalReport}\n\n_세션: ${path.basename(sessionDir)}_`;
+                sendTelegramLong(tgText).then(ok => {
                     if (ok) {
                         post({ type: 'telegramSent', agent: 'secretary' });
                     }
