@@ -18,8 +18,10 @@ from longcore.data import fetch_history  # noqa: E402
 
 from run_backtest import metrics, simulate  # noqa: E402
 
-CAPITALS = [5_068, 20_000, 100_000]          # 실제 자본 / 4배 / 20배
-MIN_COMMISSIONS = [0.0, 0.5, 1.0, 2.0]       # 증권사 건당 최소 수수료 시나리오
+CAPITALS = [5_060, 20_000, 100_000]          # 실제 자본 / 4배 / 20배
+# 토스는 최소 수수료가 없고 $10 이하 면제만 있다 — 축을 '면제 기준' 으로 바꾼다.
+# ($0 = 면제 없는 증권사 대조군, $10 = 토스 실제)
+WAIVER_THRESHOLDS = [0.0, 10.0]
 
 
 def main() -> int:
@@ -28,26 +30,25 @@ def main() -> int:
     px = fetch_history(tickers + [BENCHMARK], BACKTEST_START, BACKTEST_END).dropna()
     print(f"구간 {px.index[0].date()} ~ {px.index[-1].date()}\n")
 
-    print("── ① 소수점 매매 가능 (현재 가정) ─────────────────────────────")
-    print(f"{'자본':>10} {'최소수수료':>10} {'CAGR':>8} {'누적':>10} "
+    print("── ① 토스 비용구조 (수수료 0.1%, $10 이하 면제, 소수점 매매) ────")
+    print(f"{'자본':>10} {'면제기준':>9} {'CAGR':>8} {'누적':>10} "
           f"{'총비용':>10} {'자본대비':>9}")
     base = {}
     for cap in CAPITALS:
-        for mc in MIN_COMMISSIONS:
-            nav, ev, cost = simulate(px, cfg, cap, min_commission=mc,
-                                     fractional=True)
+        for wv in WAIVER_THRESHOLDS:
+            nav, ev, cost = simulate(px, cfg, cap, free_below=wv, fractional=True)
             m = metrics(nav)
-            if mc == 0.0:
+            if wv == 10.0:
                 base[cap] = m["CAGR"]
-            print(f"{cap:>10,.0f} {mc:>10.2f} {m['CAGR']:>8.2%} "
+            label = "없음" if wv == 0 else f"${wv:.0f}"
+            print(f"{cap:>10,.0f} {label:>9} {m['CAGR']:>8.2%} "
                   f"{m['total']:>10.2%} {cost:>10,.2f} {cost/cap:>9.2%}")
         print()
 
     print("── ② 정수 주만 가능 ────────────────────────────────────────")
     print(f"{'자본':>10} {'CAGR':>8} {'누적':>10} {'vs 소수주':>10}  비고")
     for cap in CAPITALS:
-        nav, ev, cost = simulate(px, cfg, cap, min_commission=0.0,
-                                 fractional=False)
+        nav, ev, cost = simulate(px, cfg, cap, fractional=False)
         m = metrics(nav)
         gap = m["CAGR"] - base[cap]
         note = _viability_note(px, cfg, cap)

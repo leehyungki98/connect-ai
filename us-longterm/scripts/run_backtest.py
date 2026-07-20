@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from longcore import store  # noqa: E402
 from longcore.config import (BACKTEST_END, BACKTEST_START, BENCHMARK,  # noqa: E402
                              BUCKETS, COMMISSION_BPS, FRACTIONAL_SHARES,
-                             FX_SPREAD_BPS, MIN_COMMISSION_USD, SEC_FEE_BPS)
+                             FREE_BELOW_USD, FX_SPREAD_BPS, MIN_COMMISSION_USD,
+                             SEC_FEE_MIN_USD, SEC_FEE_BPS)
 from longcore.data import fetch_history  # noqa: E402
 from longcore.paper import execute  # noqa: E402
 from longcore.portfolio import nav_usd, weights  # noqa: E402
@@ -50,7 +51,8 @@ def quarterly_first_days(index, months) -> list:
 
 def simulate(px, cfg, capital: float, *, commission_bps=COMMISSION_BPS,
              min_commission=MIN_COMMISSION_USD, sec_fee_bps=SEC_FEE_BPS,
-             fractional=FRACTIONAL_SHARES, fx_spread_bps=FX_SPREAD_BPS):
+             fractional=FRACTIONAL_SHARES, fx_spread_bps=FX_SPREAD_BPS,
+             free_below=FREE_BELOW_USD, sec_fee_min=SEC_FEE_MIN_USD):
     """분기 밴드 규칙 시뮬레이션. 반환: (NAV 시계열, 리밸런싱 이벤트, 총비용).
 
     비용 파라미터를 인자로 받는 이유: 규모·소수주 민감도 분석이 같은 루프를
@@ -67,7 +69,7 @@ def simulate(px, cfg, capital: float, *, commission_bps=COMMISSION_BPS,
     prices0 = {t: float(px.loc[first, t]) for t in tickers}
     orders = make_orders(holding, prices0, cfg, ["CASH"], fractional=fractional)
     holding, fills0 = execute(orders, prices0, holding, commission_bps,
-                              min_commission, sec_fee_bps)
+                              min_commission, sec_fee_bps, free_below, sec_fee_min)
     holding["initialized"] = True
 
     total_cost = (capital - capital_after_fx) + sum(f["commission_usd"] for f in fills0)
@@ -83,7 +85,7 @@ def simulate(px, cfg, capital: float, *, commission_bps=COMMISSION_BPS,
                 if orders:
                     holding, fills = execute(orders, prices, holding,
                                              commission_bps, min_commission,
-                                             sec_fee_bps)
+                                             sec_fee_bps, free_below, sec_fee_min)
                     total_cost += sum(f["commission_usd"] for f in fills)
                     events.append({"date": day.date().isoformat(),
                                    "breached": breached, "fills": len(fills)})

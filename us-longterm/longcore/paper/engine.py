@@ -10,13 +10,19 @@ _TOL = 1e-6
 
 
 def execute(orders, prices: dict, holding: dict, commission_bps: int,
-            min_commission_usd: float = 0.0, sec_fee_bps: float = 0.0):
+            min_commission_usd: float = 0.0, sec_fee_bps: float = 0.0,
+            free_below_usd: float = 0.0, sec_fee_min_usd: float = 0.0):
     """SELL 먼저 → BUY. 반환: (새 holding, 체결 내역). 현금 음수면 예외 (가드가
     먼저 막지만 이중 방어).
 
-    비용 = max(정률 수수료, 건당 최소 수수료) + SEC 수수료(매도만).
-    최소 수수료가 **자본 규모에 대한 유일한 고정비**다 — 이게 없으면 백테스트가
-    규모에 반응하지 않는다 (2026-07-20 검증에서 드러난 결함).
+    비용 구조 (토스증권 기준):
+      거래 수수료 = 0            (체결금액 ≤ free_below_usd 이면 면제)
+                 = max(정률, 최소)  (그 외)
+      SEC 수수료  = max(정률, 최소)  — **매도에만**, 면제 기준과 무관 (규제 수수료)
+
+    `free_below_usd` 는 최소 '수수료' 가 아니라 최소 '면제' 다 — 방향이 통념과
+    반대라 소액 주문이 오히려 유리하다. 이걸 최소 수수료로 착각하면 작은 자본의
+    비용을 정반대로 추정하게 된다.
     """
     c = commission_bps / 10_000.0
     sec = sec_fee_bps / 10_000.0
@@ -26,16 +32,21 @@ def execute(orders, prices: dict, holding: dict, commission_bps: int,
 
     def fill(o, price):
         gross = o.qty * price
-        commission = max(gross * c, min_commission_usd)
-        if o.side == "SELL":
-            commission += gross * sec        # SEC 수수료는 매도에만
+        if gross <= free_below_usd:
+            commission = 0.0
+            waived = True
+        else:
+            commission = max(gross * c, min_commission_usd)
+            waived = False
+        sec_fee = max(gross * sec, sec_fee_min_usd) if o.side == "SELL" else 0.0
+        total = commission + sec_fee
         fills.append({
             "ticker": o.ticker, "side": o.side, "sleeve": o.sleeve,
             "qty": round(o.qty, 6), "price": price,
-            "gross_usd": round(gross, 2), "commission_usd": round(commission, 2),
-            "min_applied": gross * c < min_commission_usd,
+            "gross_usd": round(gross, 2), "commission_usd": round(total, 4),
+            "sec_fee_usd": round(sec_fee, 4), "fee_waived": waived,
         })
-        return gross, commission
+        return gross, total
 
     for o in sorted(orders, key=lambda o: 0 if o.side == "SELL" else 1):
         price = prices[o.ticker]

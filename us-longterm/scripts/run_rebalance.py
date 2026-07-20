@@ -22,8 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from longcore import store, thesis  # noqa: E402
 from longcore.config import (BUCKETS, COMMISSION_BPS, FRACTIONAL_SHARES,  # noqa: E402
-                             FX_SPREAD_BPS, FX_TICKER, MIN_COMMISSION_USD,
-                             SEC_FEE_BPS, THESIS_CONSECUTIVE_OUT, THESIS_EXIT_TARGET)
+                             FREE_BELOW_USD, FX_SPREAD_BPS, FX_TICKER,
+                             MIN_COMMISSION_USD, SEC_FEE_MIN_USD, SEC_FEE_BPS,
+                             THESIS_CONSECUTIVE_OUT, THESIS_EXIT_TARGET)
 from longcore.data import fetch_history  # noqa: E402
 from longcore.gates import paper_only, rebalance_gate  # noqa: E402
 from longcore.paper import execute, record_rebalance  # noqa: E402
@@ -184,7 +185,8 @@ def main() -> int:
             continue
 
         new_holding, fills = execute(orders, prices, holding, COMMISSION_BPS,
-                                     MIN_COMMISSION_USD, SEC_FEE_BPS)
+                                     MIN_COMMISSION_USD, SEC_FEE_BPS,
+                                     FREE_BELOW_USD, SEC_FEE_MIN_USD)
         new_holding["initialized"] = True
         w_after = weights(new_holding, prices, cfg["sleeves"])
         path = record_rebalance(
