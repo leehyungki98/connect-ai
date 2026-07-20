@@ -7,7 +7,12 @@
 - 편집 금지 구역: `longcore/safety/`, `longcore/gates/`, `longcore/config.py`.
   안전층(킬스위치·버킷 리스크 한도·리밸런싱 게이트)은 100% 결정적 코드 — LLM 호출 금지.
 - 실거래 API 연결 금지. 체결은 내부 페이퍼 엔진만 (paper_only 게이트가 강제).
-- 손절 없음. 안전 규칙 = 목표 비중 ±5%p 밴드 리밸런싱(분기) + 킬스위치.
+- 손절 없음. 안전 규칙 = 목표 비중 ±5%p 밴드 리밸런싱(분기) + 논지 재판정 + 킬스위치.
+- **물타기 방지 — 실행 순서를 지킨다**: 분기 점검일에 ① 논지 재판정 → ② 퇴출 종목
+  제외·목표를 VOO 가 흡수 → ③ 밴드 판정 → ④ 주문. 순서를 뒤집으면 논지가 깨진
+  종목을 밴드가 기계적으로 추가 매수한다. **물타기는 논지가 살아있는 종목에만 허용.**
+- 단일 종목 상한은 **실효 비중(look-through)** 기준 15%. ETF 안에 든 같은 종목까지
+  합산한다 (NVDA 직접 10% + VOO 경유 4.5% = 14.5%가 진짜 노출).
 - 통화(환율) 노출은 리스크로 항상 기록·측정한다 (fx_log, nav_log의 KRW 병기).
 - `state/`는 운영 데이터(커밋 금지), `ledger/`는 학습 자산(git 추적).
 - 스윙팀(`trading/`)은 별도 조직 — 읽기만 허용, 수정 금지. 코드 공유·import 금지.
@@ -19,7 +24,8 @@
   구현 금지, config.py의 확장점 주석 참조.
 
 ## 확정 파라미터 (2026-07-20 사용자 승인)
-- 자금: 스윙 25 / 장기 75 (장기 모의 자본 3,000만원) — 단일 출처는 DESKS.md
+- 자금: 총 1,000만원의 75% = **장기 모의 자본 750만원** — 단일 출처는 DESKS.md.
+  모의를 실전 규모와 같게 맞춘다 (크게 굴리면 수수료·최소단위 영향이 과소평가된다)
 - 배분: ETF(VOO) 60 / 성장주(NVDA·TSM·META 각 10) 30 / 현금(USD) 10
 - 성장주 편입 기준 (분기 리뷰 잣대): ① 순이익률 15%↑ + FCF 흑자
   ② 매출 성장 +15%↑ ③ 선행PER 30↓ 또는 PEG 1.5↓ — 셋 다 통과해야 편입.
@@ -33,8 +39,11 @@
 ## 운용 명령
 - 최초 1회 (데스크 설립): `python scripts/run_rebalance.py --init` — 보유가 비어 있을
   때만 허용되는 최초 배분. 분기 점검일 게이트만 면제, 나머지 안전층 전부 적용.
-- 매일: `python scripts/run_daily.py`
-- 분기 점검일: `python scripts/run_rebalance.py --dry-run` → 확인 후 실행
+- 매일: `python scripts/run_daily.py` (실효 비중 여유분 표시)
+- 분기 리뷰(점검일 전): `python scripts/run_review.py` — 논지 재판정 + 정세 집계.
+  제안만 낸다. 퇴출 후보가 나오면 근거를 `ledger/reviews/` 에 기록하고 승인받는다
+- 분기 점검일: `python scripts/run_rebalance.py --dry-run` → 확인 후 실행.
+  퇴출 승인 시 `--confirm-exits NVDA` 처럼 티커를 직접 적어야 진행된다 (자동 퇴출 없음)
 - 성과: `python scripts/run_report.py`
 - 테스트: `python -m pytest tests/ -q`
 - 킬스위치: `python -m longcore.safety status|engage "이유"|reset`
