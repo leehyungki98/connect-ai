@@ -20,6 +20,22 @@ UNKNOWN = "unknown"   # 데이터 결측 — 미달로 치지 않는다 (fail-cl
                       # 결측을 퇴출 근거로 쓰면 데이터 사고가 매도로 이어진다)
 
 
+def _num(v):
+    """결측 정규화 — None 과 NaN 을 똑같이 '없음' 으로 만든다.
+
+    NaN 을 걸러내지 않으면 `nan >= 0.15` 가 False 라서 **결측이 조용히 FAIL 이
+    된다.** 2026-07-20 역사적 검증에서 실제로 잡힌 결함이다 (첫 회계연도처럼
+    직전값이 없어 성장률이 NaN 인 구간이 전부 '성장 미달' 로 찍혔다).
+    yfinance 는 float('nan') 을 그대로 돌려주므로 운영 경로에도 같은 구멍이 있었다.
+    """
+    if v is None:
+        return None
+    try:
+        return None if v != v else float(v)   # NaN != NaN
+    except TypeError:
+        return None
+
+
 def judge_criteria(fundamentals: dict, criteria: dict) -> dict:
     """종목 하나의 3기준 판정. fundamentals 키가 없거나 None 이면 UNKNOWN.
 
@@ -27,20 +43,20 @@ def judge_criteria(fundamentals: dict, criteria: dict) -> dict:
     """
     out = {}
 
-    margin = fundamentals.get("net_margin")
-    fcf = fundamentals.get("free_cashflow")
+    margin = _num(fundamentals.get("net_margin"))
+    fcf = _num(fundamentals.get("free_cashflow"))
     if margin is None or fcf is None:
         out["수익성"] = UNKNOWN
     else:
         out["수익성"] = (PASS if margin >= criteria["net_margin_min"] and fcf > 0
                        else FAIL)
 
-    growth = fundamentals.get("revenue_growth")
+    growth = _num(fundamentals.get("revenue_growth"))
     out["성장"] = (UNKNOWN if growth is None
                  else PASS if growth >= criteria["revenue_growth_min"] else FAIL)
 
-    fpe = fundamentals.get("forward_pe")
-    peg = fundamentals.get("peg")
+    fpe = _num(fundamentals.get("forward_pe"))
+    peg = _num(fundamentals.get("peg"))
     if fpe is None and peg is None:
         out["밸류"] = UNKNOWN
     else:

@@ -22,7 +22,10 @@ from longcore.rebalance import check_bands, make_orders  # noqa: E402
 
 import pandas as pd  # noqa: E402
 
-START_CAPITAL_USD = 100_000.0
+# 백테스트 시작 자본 = 데스크 실제 자본 (2026-07-20 개정).
+# $100k 같은 큰 값으로 돌리면 수수료·최소주문 영향이 과소평가된다 —
+# 실제 자본이 ~$5k 인데 검증만 $100k 로 하면 그 검증은 전이되지 않는다.
+DEFAULT_CAPITAL_USD = BUCKETS["해외증권"]["capital_krw"] / 1480.0   # 설립 환율 근사
 
 
 def metrics(nav: pd.Series) -> dict:
@@ -48,6 +51,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=BACKTEST_START)
     ap.add_argument("--end", default=BACKTEST_END)
+    ap.add_argument("--capital", type=float, default=DEFAULT_CAPITAL_USD,
+                    help="시작 자본 USD (기본: 데스크 실제 자본)")
     args = ap.parse_args()
 
     cfg = BUCKETS["해외증권"]
@@ -56,7 +61,7 @@ def main() -> int:
     idx = px.index
     rebal_days = set(quarterly_first_days(idx, set(cfg["rebalance_months"])))
 
-    holding = {"cash_usd": START_CAPITAL_USD, "positions": {}, "initialized": False}
+    holding = {"cash_usd": args.capital, "positions": {}, "initialized": False}
     first = idx[0]
     prices0 = {t: float(px.loc[first, t]) for t in tickers}
     orders = make_orders(holding, prices0, cfg, ["CASH"])   # 최초 배분
@@ -76,10 +81,10 @@ def main() -> int:
                                "breached": breached, "fills": len(fills)})
         navs.append(nav_usd(holding, prices))
     nav = pd.Series(navs, index=idx)
-    spy = px[BENCHMARK] / px[BENCHMARK].iloc[0] * START_CAPITAL_USD
+    spy = px[BENCHMARK] / px[BENCHMARK].iloc[0] * args.capital
 
     m_desk, m_spy = metrics(nav), metrics(spy)
-    print(f"구간 {idx[0].date()} ~ {idx[-1].date()} · 시작 ${START_CAPITAL_USD:,.0f} · "
+    print(f"구간 {idx[0].date()} ~ {idx[-1].date()} · 시작 ${args.capital:,.0f} · "
           f"수수료 {COMMISSION_BPS}bps")
     print(f"리밸런싱 실행 {len(events)}회 / 분기 점검 {len(rebal_days)}회 "
           f"(이탈 없으면 주문 0건)")

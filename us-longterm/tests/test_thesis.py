@@ -43,6 +43,38 @@ def test_missing_data_is_unknown_not_fail():
     assert not thesis.quarter_verdict(r, THESIS_FAIL_THRESHOLD)
 
 
+def test_nan_is_unknown_not_fail():
+    """회귀 — NaN 이 조용히 FAIL 이 되던 결함 (2026-07-20 역사적 검증에서 발견).
+
+    `nan >= 0.15` 는 False 라서 결측이 기준 미달로 카운트됐다. 결측 2개면 '미달',
+    2분기 연속이면 퇴출 제안까지 갔다 — 데이터 사고가 매도가 되는 경로다.
+    """
+    nan = float("nan")
+    r = thesis.judge_criteria(
+        {"net_margin": nan, "free_cashflow": nan, "revenue_growth": nan,
+         "forward_pe": nan, "peg": nan}, C)
+    assert all(v == thesis.UNKNOWN for v in r.values())
+    assert not thesis.quarter_verdict(r, THESIS_FAIL_THRESHOLD)
+
+
+def test_first_period_missing_growth_is_unknown():
+    """직전값이 없는 첫 회계연도 — 성장률 계산 불가는 미달이 아니다."""
+    r = thesis.judge_criteria({**HEALTHY, "revenue_growth": float("nan")}, C)
+    assert r["성장"] == thesis.UNKNOWN
+    assert r["수익성"] == thesis.PASS
+
+
+def test_partial_nan_still_judges_available_criteria():
+    """일부만 결측이면 나머지는 정상 판정해야 한다 — 전부 UNKNOWN 으로 뭉개지 않는다."""
+    r = thesis.judge_criteria(
+        {**BROKEN, "forward_pe": float("nan"), "peg": None}, C)
+    assert r["밸류"] == thesis.UNKNOWN
+    assert r["수익성"] == thesis.FAIL      # 이익률 3.9% + FCF 적자
+    # 매출 +16% 는 기준(+15%) 을 통과한다. 원본 논지 문서가 TSLA 를 "0/3" 으로
+    # 적었지만 숫자대로는 1/3 이다 — 결론(편입 불가)은 같으나 기록이 부정확했다.
+    assert r["성장"] == thesis.PASS
+
+
 def test_single_bad_quarter_does_not_exit():
     history = {"NVDA": [False, True]}          # 최근 1분기만 미달
     assert thesis.exit_candidates(history, THESIS_CONSECUTIVE_OUT) == []
