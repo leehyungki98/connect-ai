@@ -54,6 +54,9 @@
   ~ 다음 개장 전에 돌린다. 한국 아침이 자연스럽다(밤새 닫힌 종가 캡처). 미국장
   **열려 있는 동안(밤 10:30~새벽 5시)** 돌리면 미완성 일봉이 잡혀 경고가 뜬다 —
   마감 후 재실행하면 ledger 미러가 교정한다 (`longcore/clock.py`, DST 자동 반영).
+- 정세 수집(강해원): `python scripts/collect_wsj.py` (WSJ RSS → 관련 뉴스만 스테이징,
+  점수 없음) → `python scripts/run_intel_review.py` (사람이 impact·축·근거 입력 → ledger/intel/).
+  자동 점수화 금지 원칙 — 수집은 재료, 판단은 사람. 원문은 state/(비커밋), 판단만 git.
 - **월 1회 이상**: `python scripts/run_snapshot.py` — 재무 스냅샷 적재.
   선행PER·PEG 는 시점 데이터라 오늘 안 찍으면 영원히 복구 불가다 (ledger/fundamentals/)
 - 분기 리뷰(점검일 전): `python scripts/run_review.py` — 논지 재판정 + 정세 집계.
