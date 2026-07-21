@@ -8015,12 +8015,19 @@ function _swingShadowCardHtml(): string {
             const live = (typeof p.value_krw === 'number') ? p.value_krw : null;
             const pnl = (typeof p.pnl_krw === 'number') ? p.pnl_krw : null;
             const ret = (typeof p.ret_pct === 'number') ? p.ret_pct : null;
-            openRows += `<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.12);font-size:12px">
-              <div style="display:flex;justify-content:space-between"><span style="font-weight:700">${esc(p.name || p.symbol)} <span style="opacity:.4;font-weight:400;font-size:11px">${esc(p.symbol)}</span></span>
-                ${live !== null ? `<span style="font-weight:600">₩${Number(live).toLocaleString()}</span>` : `<span style="opacity:.5">진입 ₩${Number(p.entry_price).toLocaleString()}</span>`}</div>
-              <div style="display:flex;justify-content:space-between;opacity:.6;margin-top:2px">
-                <span>${Number(p.qty).toLocaleString()}주 · 손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span>
-                ${pnl !== null ? `<span style="color:${col(pnl)};font-weight:600">${sg(pnl)}${Number(pnl).toLocaleString()} (${sg(ret || 0)}${ret}%)</span>` : `<span>${esc(p.entry_date)} 진입</span>`}</div></div>`;
+            /* 브로커 앱처럼 — 1주당 매입가 vs 현재가, 매입금액 vs 평가금액을 다 보여준다. */
+            const cost = (typeof p.cost_krw === 'number') ? p.cost_krw : Number(p.qty) * Number(p.entry_price);
+            const cur = (typeof p.price === 'number') ? p.price : null;
+            openRows += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.12);font-size:12px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-weight:700">${esc(p.name || p.symbol)} <span style="opacity:.4;font-weight:400;font-size:11px">${esc(p.symbol)}</span></span>
+                ${live !== null ? `<span style="font-weight:600">평가 ₩${Number(live).toLocaleString()}</span>` : ''}</div>
+              <div style="display:flex;justify-content:space-between;margin-top:3px">
+                <span style="opacity:.7">${Number(p.qty).toLocaleString()}주 · 매입 ${Number(p.entry_price).toLocaleString()}원${cur !== null ? ` → 현재 <b>${Number(cur).toLocaleString()}원</b>` : ''}</span>
+                ${pnl !== null ? `<span style="color:${col(pnl)};font-weight:600">${sg(pnl)}${Number(pnl).toLocaleString()} (${sg(ret || 0)}${ret}%)</span>` : `<span style="opacity:.5">${esc(p.entry_date)} 진입</span>`}</div>
+              <div style="display:flex;justify-content:space-between;opacity:.5;margin-top:2px;font-size:11px">
+                <span>매입금액 ₩${Number(cost).toLocaleString()}</span>
+                <span>손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span></div></div>`;
         }
         // 청산 내역 (ledger)
         if (root) {
@@ -8033,9 +8040,11 @@ function _swingShadowCardHtml(): string {
                 for (const e of exits.slice(-6).reverse()) {
                     realized += Number(e.realized_krw) || 0;
                     const reason = { stop: '손절', target: '목표', time: '기간' }[e.reason as string] || e.reason;
-                    closedRows += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px solid rgba(128,128,128,.08)">
-                      <span><span style="font-weight:600">${esc(e.name || e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
-                      <span style="color:${col(e.realized_krw)}">${sg(e.ret_pct)}${e.ret_pct}% · ${sg(e.realized_krw)}₩${Number(e.realized_krw).toLocaleString()}</span></div>`;
+                    closedRows += `<div style="padding:5px 0;font-size:12px;border-bottom:1px solid rgba(128,128,128,.08)">
+                      <div style="display:flex;justify-content:space-between">
+                        <span><span style="font-weight:600">${esc(e.name || e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
+                        <span style="color:${col(e.realized_krw)};font-weight:600">${sg(e.ret_pct)}${e.ret_pct}% · ${sg(e.realized_krw)}₩${Number(e.realized_krw).toLocaleString()}</span></div>
+                      <div style="opacity:.5;font-size:11px;margin-top:1px">${Number(e.entry_price).toLocaleString()}원 → ${Number(e.exit_price).toLocaleString()}원 · ${Number(e.qty).toLocaleString()}주 · ${Number(e.hold_days)}일 보유</div></div>`;
                 }
                 realized = exits.reduce((a: number, e: any) => a + (Number(e.realized_krw) || 0), 0);
             }

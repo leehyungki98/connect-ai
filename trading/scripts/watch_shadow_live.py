@@ -76,11 +76,14 @@ def _html(view: dict, refresh: int) -> str:
     for p in view["positions"]:
         c = "#e5484d" if p["pnl_krw"] >= 0 else "#3b82f6"
         s = "+" if p["pnl_krw"] >= 0 else ""
-        rows += (f"<tr><td class='tk'>{p.get('name', p['symbol'])}<br><span style='opacity:.4;font-size:11px'>{p['symbol']}</span></td><td>{p['qty']}</td>"
-                 f"<td>{p['price']:,}</td><td>{p['value_krw']:,}</td>"
+        rows += (f"<tr><td class='tk'>{p.get('name', p['symbol'])}<br>"
+                 f"<span style='opacity:.4;font-size:11px'>{p['symbol']}</span></td>"
+                 f"<td>{p['qty']:,}</td>"
+                 f"<td>{p['entry_price']:,}</td><td>{p['price']:,}</td>"
+                 f"<td>{p['cost_krw']:,}</td><td>{p['value_krw']:,}</td>"
                  f"<td style='color:{c}'>{s}{p['pnl_krw']:,}<br>{s}{p['ret_pct']}%</td></tr>")
     if not rows:
-        rows = "<tr><td colspan='5' style='text-align:center;opacity:.5;padding:20px'>보유 섀도 없음 (프리마켓 돌면 진입 쌓임)</td></tr>"
+        rows = "<tr><td colspan='7' style='text-align:center;opacity:.5;padding:20px'>보유 섀도 없음 (프리마켓 돌면 진입 쌓임)</td></tr>"
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="{refresh}"><title>스윙 섀도 (페이퍼)</title>
 <style>body{{background:#0b0e14;color:#e6e9ef;font-family:system-ui,'Segoe UI',sans-serif;margin:0;padding:20px}}
@@ -93,7 +96,7 @@ th{{opacity:.5;font-weight:500}}td.tk,th:first-child{{text-align:left;font-weigh
 <div class="big">₩{view['total_value_krw']:,}</div>
 <div class="pnl">{sg}₩{view['total_pnl_krw']:,} ({sg}{view['total_ret_pct']}%)</div>
 <div class="sub">{view['updated']} 갱신 · {refresh}초마다 새로고침 · 현금 ₩{view['cash_krw']:,}</div>
-<table><thead><tr><th>종목</th><th>수량</th><th>현재가</th><th>평가액</th><th>평가손익</th></tr></thead>
+<table><thead><tr><th>종목</th><th>수량</th><th>매입가</th><th>현재가</th><th>매입금액</th><th>평가금액</th><th>평가손익</th></tr></thead>
 <tbody>{rows}</tbody></table></body></html>"""
 
 
