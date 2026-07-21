@@ -8016,7 +8016,7 @@ function _swingShadowCardHtml(): string {
             const pnl = (typeof p.pnl_krw === 'number') ? p.pnl_krw : null;
             const ret = (typeof p.ret_pct === 'number') ? p.ret_pct : null;
             openRows += `<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.12);font-size:12px">
-              <div style="display:flex;justify-content:space-between"><span style="font-weight:700">${esc(p.symbol)}</span>
+              <div style="display:flex;justify-content:space-between"><span style="font-weight:700">${esc(p.name || p.symbol)} <span style="opacity:.4;font-weight:400;font-size:11px">${esc(p.symbol)}</span></span>
                 ${live !== null ? `<span style="font-weight:600">₩${Number(live).toLocaleString()}</span>` : `<span style="opacity:.5">진입 ₩${Number(p.entry_price).toLocaleString()}</span>`}</div>
               <div style="display:flex;justify-content:space-between;opacity:.6;margin-top:2px">
                 <span>${Number(p.qty).toLocaleString()}주 · 손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span>
@@ -8034,7 +8034,7 @@ function _swingShadowCardHtml(): string {
                     realized += Number(e.realized_krw) || 0;
                     const reason = { stop: '손절', target: '목표', time: '기간' }[e.reason as string] || e.reason;
                     closedRows += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px solid rgba(128,128,128,.08)">
-                      <span><span style="font-weight:600">${esc(e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
+                      <span><span style="font-weight:600">${esc(e.name || e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
                       <span style="color:${col(e.realized_krw)}">${sg(e.ret_pct)}${e.ret_pct}% · ${sg(e.realized_krw)}₩${Number(e.realized_krw).toLocaleString()}</span></div>`;
                 }
                 realized = exits.reduce((a: number, e: any) => a + (Number(e.realized_krw) || 0), 0);

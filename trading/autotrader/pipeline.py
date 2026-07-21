@@ -239,7 +239,9 @@ def run_premarket(
                  "horizon_days": d.horizon_days}
                 for d in ts.entries
             ]
-            shadow.record_entries(today.isoformat(), _sh_entries, _vol20, breadth=breadth)
+            _names = shadow.resolve_names([d.symbol for d in ts.entries])
+            shadow.record_entries(today.isoformat(), _sh_entries, _vol20,
+                                  breadth=breadth, names=_names)
     except Exception:  # noqa: BLE001 — 표시/기록 실패는 절대 실매매를 막지 않는다
         pass
 

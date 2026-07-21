@@ -52,7 +52,8 @@ def _build_view(state: dict, prices: dict) -> dict:
         val = p["qty"] * price
         cost = p["qty"] * p["entry_price"]
         rows.append({
-            "symbol": sym, "qty": p["qty"], "entry_price": p["entry_price"],
+            "symbol": sym, "name": p.get("name", sym),
+            "qty": p["qty"], "entry_price": p["entry_price"],
             "price": price, "value_krw": val, "cost_krw": cost,
             "pnl_krw": val - cost, "ret_pct": round((price / p["entry_price"] - 1) * 100, 2),
             "stop": p["stop"], "target": p["target"], "entry_date": p["entry_date"],
@@ -75,7 +76,7 @@ def _html(view: dict, refresh: int) -> str:
     for p in view["positions"]:
         c = "#e5484d" if p["pnl_krw"] >= 0 else "#3b82f6"
         s = "+" if p["pnl_krw"] >= 0 else ""
-        rows += (f"<tr><td class='tk'>{p['symbol']}</td><td>{p['qty']}</td>"
+        rows += (f"<tr><td class='tk'>{p.get('name', p['symbol'])}<br><span style='opacity:.4;font-size:11px'>{p['symbol']}</span></td><td>{p['qty']}</td>"
                  f"<td>{p['price']:,}</td><td>{p['value_krw']:,}</td>"
                  f"<td style='color:{c}'>{s}{p['pnl_krw']:,}<br>{s}{p['ret_pct']}%</td></tr>")
     if not rows:

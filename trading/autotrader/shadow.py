@@ -23,8 +23,37 @@ from autotrader.sizing import position_size
 
 _BASE = Path(__file__).resolve().parents[1]
 STATE_FILE = _BASE / "state" / "shadow_state.json"          # 운영 데이터 (커밋 제외)
+NAMES_FILE = _BASE / "state" / "symbol_names.json"          # 코드→종목명 캐시
 LEDGER_DIR = _BASE / "ledger" / "shadow"                    # 학습 자산 (git 추적)
 TRADES_FILE = LEDGER_DIR / "shadow_trades.jsonl"            # 진입·청산 이벤트 이력
+
+
+def resolve_names(codes, lookup=None) -> dict:
+    """6자리 코드 → 종목명. state/symbol_names.json 캐시 (없는 것만 조회).
+    lookup(code)->name 미제공 시 pykrx. 실패는 코드 그대로 (절대 예외 안 냄)."""
+    names = {}
+    if NAMES_FILE.exists():
+        try:
+            names = json.loads(NAMES_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            names = {}
+    missing = [c for c in codes if c not in names]
+    if missing:
+        if lookup is None:
+            try:
+                from pykrx import stock
+                lookup = stock.get_market_ticker_name
+            except Exception:  # noqa: BLE001
+                lookup = lambda c: c  # noqa: E731
+        for c in missing:
+            try:
+                names[c] = lookup(c) or c
+            except Exception:  # noqa: BLE001
+                names[c] = c
+        NAMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        NAMES_FILE.write_text(json.dumps(names, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    return {c: names.get(c, c) for c in codes}
 
 # 전략 상수 — pipeline 과 동기화 대상 (tests/test_shadow.py 가 drift 를 잡는다).
 INITIAL_CAPITAL_KRW = 10_000_000
@@ -76,7 +105,8 @@ def _portfolio(s: dict) -> Portfolio:
 
 
 def record_entries(date: str, entries, vol20_by_symbol: dict,
-                   breadth: float = None, state: dict = None) -> list:
+                   breadth: float = None, names: dict = None,
+                   state: dict = None) -> list:
     """판정자 통과분(entries)을 섀도 포지션으로 진입 기록. 주문 없음.
 
     entries: [{symbol, entry_price, stop_price, target_price, horizon_days}, ...]
@@ -104,15 +134,17 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
         qty = position_size(entry, stop, _portfolio(s))
         if qty <= 0:
             continue                                    # 사이징 0 (리스크/현금 한도)
+        name = (names or {}).get(sym, sym)
         cost = qty * entry
         s["cash_krw"] -= cost + _ceil_ppm(cost, COMMISSION_PPM)
         s["positions"][sym] = {
-            "qty": qty, "entry_price": entry, "stop": stop,
+            "name": name, "qty": qty, "entry_price": entry, "stop": stop,
             "target": int(d["target_price"]), "horizon_days": int(d["horizon_days"]),
             "entry_date": date,
         }
-        rec = {"event": "entry", "date": date, "symbol": sym, "qty": qty,
-               "entry_price": entry, "stop": stop, "target": int(d["target_price"]),
+        rec = {"event": "entry", "date": date, "symbol": sym, "name": name,
+               "qty": qty, "entry_price": entry, "stop": stop,
+               "target": int(d["target_price"]),
                "horizon_days": int(d["horizon_days"]), "breadth": breadth}
         events.append(rec)
         _append_trade(rec)
@@ -149,6 +181,7 @@ def resolve(bars_by_symbol: dict, state: dict = None) -> list:
             cost = p["qty"] * p["entry_price"]
             realized = fill.net_krw - (cost + _ceil_ppm(cost, COMMISSION_PPM))
             rec = {"event": "exit", "date": bar["date"], "symbol": sym,
+                   "name": p.get("name", sym),
                    "reason": kind, "exit_price": fill.price,
                    "entry_date": p["entry_date"], "entry_price": p["entry_price"],
                    "qty": p["qty"], "hold_days": held,
