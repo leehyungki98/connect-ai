@@ -107,7 +107,10 @@ def log_breadth(date: str, breadth: float, path: Path = None) -> None:
                     if x.strip() and json.loads(x).get("date") != date]
         except (OSError, ValueError):
             rows = []
-    rows.append({"date": date, "breadth": round(float(breadth), 4)})
+    # source: 결정 시점 값인지 사후 백필인지 구분 — 폭 구간 분석의 기준값이라
+    # 버킷 경계에서 같은 날이 다른 칸에 들어가면 안 된다. (2026-07-21 실제 사고)
+    rows.append({"date": date, "breadth": round(float(breadth), 4),
+                 "source": "premarket"})
     rows.sort(key=lambda r: r["date"])
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:

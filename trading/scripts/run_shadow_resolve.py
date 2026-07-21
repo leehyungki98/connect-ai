@@ -82,13 +82,21 @@ def main() -> int:
     # ② 보유분 청산 판정 (손절 → 목표 → 기간)
     closed = shadow.resolve(bars_by_symbol)
     if not closed:
-        print("청산 트리거 없음 — 전부 보유 유지.")
+        print("청산 없음 — 보유 유지.")
     else:
+        # 청산은 사장님이 제일 먼저 볼 사건이라 위로 크게 뽑는다.
+        print("")
+        print("🔔 오늘 팔린 종목")
         for c in closed:
-            print(f"  청산 {c.get('name', c['symbol'])} · {c['failure_kind']} "
-                  f"@ {c['exit_price']:,}원 · {c['ret_pct']:+.2f}% · "
-                  f"보유 {c['hold_days']}일 · 실현 {c['realized_krw']:+,}원 "
-                  f"({c['entry_date']}→{c['date']})")
+            win = c["ret_pct"] >= 0
+            why = {"목표달성": "목표가 도달", "갭손절": "갭하락으로 손절",
+                   "1봉손절": "하루 만에 손절", "손절": "손절",
+                   "기간만료": "보유기간 만료"}.get(c["failure_kind"], c["failure_kind"])
+            print(f"  {'📈' if win else '📉'} {c.get('name', c['symbol'])} — {why}")
+            print(f"     {c['entry_price']:,}원 → {c['exit_price']:,}원 "
+                  f"({c['ret_pct']:+.2f}%) · {c['hold_days']}일 보유")
+            print(f"     실현손익 {c['realized_krw']:+,}원")
+        print("")
     st = shadow.load_state()
     print(f"[계좌] 남은 보유 {len(st.get('positions', {}))}종목 · "
           f"대기 {len(st.get('pending', []))}건")
