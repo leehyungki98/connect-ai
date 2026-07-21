@@ -30,6 +30,48 @@ def _median(xs: list) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
+def _stats(rows: list) -> tuple:
+    """(건수, 평균, 중앙값, 승률) — 청산분 기준. 청산 0건이면 None 들."""
+    cl = [r for r in rows if r["status"] == "closed"]
+    if not cl:
+        return len(rows), None, None, None
+    rets = [r["ret_pct"] for r in cl]
+    wr = sum(1 for x in rets if x > 0) / len(cl) * 100
+    return len(rows), sum(rets) / len(rets), _median(rets), wr
+
+
+def _line(label: str, rows: list) -> None:
+    n, avg, med, wr = _stats(rows)
+    if avg is None:
+        print(f"{label:>10} {n:>5} {'—':>8} {'—':>8} {'—':>6}   (청산 대기)")
+    else:
+        print(f"{label:>10} {n:>5} {avg:>+7.2f}% {med:>+7.2f}% {wr:>5.0f}%")
+
+
+def _rank_origin_table(rows: list) -> None:
+    """순위대·출처별 성과.
+
+    확장(선정자가 개수를 요구받아 끌어올린 제안)은 확신이 낮은 표본이라
+    실계좌가 실제로 쓴 선정과 성격이 다르다. 한 칸에 넣고 평균 내면
+    "3~5등까지 사도 되나"는 물론 "지금 2개가 맞나"에도 답을 못 한다.
+    """
+    has = [r for r in rows if r.get("rank") or r.get("origin")]
+    if not has:
+        return
+    print(f"\n{'구분':>10} {'건수':>5} {'평균':>8} {'중앙값':>8} {'승률':>6}")
+    for lo, hi, lab in ((1, 2, "1~2등"), (3, 5, "3~5등"), (6, 99, "6등+")):
+        b = [r for r in has if r.get("rank") and lo <= r["rank"] <= hi]
+        if b:
+            _line(lab, b)
+    print("           " + "-" * 36)
+    for org in ("선정자", "확장"):
+        b = [r for r in has if r.get("origin") == org]
+        if b:
+            _line(org, b)
+    print("※ '확장'은 개수를 채우라고 시켜서 나온 낮은 확신 제안이다.")
+    print("  실계좌가 쓴 '선정자'와 같은 칸에 넣고 평균 내지 마라.")
+
+
 def main() -> int:
     rows = [r for r in shadow.load_samples()
             if r.get("status") in ("closed", "unfilled")]
@@ -90,6 +132,9 @@ def main() -> int:
 
     print(f"\n※ 표본 {MIN_SAMPLE}건 미만은 가설 승격 안 함 (우연히 좋아 보이는 칸 방지)")
     print("※ 평균만 보지 마라 — 중앙값·손절%가 필터의 보호효과다")
+
+    # ── 순위·출처별 — 섞어서 평균 내면 "몇 등까지 사도 되나"에 답을 못 한다 ──
+    _rank_origin_table(rows)
     print("※ 진입은 실전과 동일한 지정가 체결 조건 — 미체결도 기록된다")
 
     if hyp:

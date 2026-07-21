@@ -28,6 +28,7 @@ LEDGER_DIR = _BASE / "ledger" / "shadow"                    # 학습 자산 (git
 TRADES_FILE = LEDGER_DIR / "shadow_trades.jsonl"            # 계좌: 진입·청산 이력
 SAMPLES_FILE = LEDGER_DIR / "shadow_samples.jsonl"          # 샘플: 제약 없이 전부
 BREADTH_FILE = LEDGER_DIR / "breadth_log.jsonl"             # 폭 일지 (매일 한 줄)
+RANKING_FILE = LEDGER_DIR / "ranking_log.jsonl"             # 그날 상위 랭킹 전체
 
 
 def resolve_names(codes, lookup=None) -> dict:
@@ -118,9 +119,34 @@ def log_breadth(date: str, breadth: float, path: Path = None) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def log_ranking(date: str, rows: list, breadth: float = None,
+                path: Path = None) -> None:
+    """상위 랭킹 전체를 매일 남긴다 — 지금은 10개 중 2개만 남기고 8개를 버리고 있다.
+
+    선정자가 안 고른 종목엔 손절/목표가가 없어 섀도 매매로는 못 돌린다. 대신
+    '그 뒤 실제로 올랐나'는 나중에 일봉으로 언제든 붙일 수 있다 — 단 '그날 몇 등이었나'는
+    사후 재구성이 안 된다(유니버스·지표가 그날 것이라). 그래서 순위만이라도 오늘 적어둔다.
+    rows: [{symbol, name, rank, close, ret20, ret60, vol20, proposed}]
+    """
+    p = path or RANKING_FILE
+    keep = []
+    if p.exists():
+        try:
+            keep = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()
+                    if x.strip() and json.loads(x).get("date") != date]
+        except (OSError, ValueError):
+            keep = []
+    keep.append({"date": date, "breadth": breadth, "rows": rows})
+    keep.sort(key=lambda r: r["date"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        for r in keep:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
 def record_samples(date: str, entries, vol20_by_symbol: dict,
                    breadth: float = None, names: dict = None,
-                   path: Path = None) -> list:
+                   path: Path = None, origin: str = "선정자") -> list:
     """샘플 — 계좌 제약(현금·일2종목·보유중) **무시하고 판정자 통과분을 전부** 기록.
 
     왜: 계좌는 3~4일이면 꽉 차 그 뒤 몇 주간 폭이 샘플링되지 않는다. 게다가
@@ -147,6 +173,10 @@ def record_samples(date: str, entries, vol20_by_symbol: dict,
             "name": (names or {}).get(sym, sym), "qty": qty,
             "limit_price": entry, "stop": stop, "target": int(d["target_price"]),
             "horizon_days": int(d["horizon_days"]), "breadth": breadth,
+            # rank: 그날 모멘텀 순위. origin: 실계좌가 실제로 쓴 선정("선정자")인지
+            # 섀도 전용으로 더 받아온 확장분("확장")인지. 이 둘을 구분 없이 평균 내면
+            # "3~5등까지 사도 되나"라는 질문 자체에 답할 수 없게 된다.
+            "rank": d.get("rank"), "origin": origin,
             "status": "pending",
         })
     if out:

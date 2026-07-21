@@ -50,7 +50,14 @@ class TwoStageResult:
 
 # ── 1단: 선정자 (공격적 제안) ─────────────────────────────────────────
 
-def build_proposer_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str:
+def build_proposer_prompt(candidates: Sequence[Candidate], pf: Portfolio,
+                          want: int = 0) -> str:
+    """want>0 이면 '최소 want개' 요구 — 섀도 전용 확장 선정에서만 쓴다.
+
+    실계좌 경로는 want=0(기본)으로 호출해 프롬프트가 한 글자도 안 바뀐다.
+    개수를 요구하면 확신이 낮은 것까지 끌어올리게 되므로, 그렇게 얻은 제안을
+    실계좌 선정과 섞으면 안 된다 — 기록 시 origin='확장'으로 분리한다.
+    """
     held = "\n".join(
         f"- {sym}: {p.qty}주, 평가액 {p.value_krw:,}원"
         for sym, p in sorted(pf.positions.items())
@@ -61,9 +68,16 @@ def build_proposer_prompt(candidates: Sequence[Candidate], pf: Portfolio) -> str
         f"20일변동성 {c.ranked.vol20:.1%}"
         for c in candidates
     )
+    quota = (
+        f"\n**이번 요청은 최소 {want}개를 enter로 제안하라.** 확신이 가장 낮은 것부터"
+        f" 순서대로 뒤에 놓고, reason에 확신이 낮은 이유를 그대로 적어라."
+        f" 억지로 채운 제안이라도 숨기지 마라 — 그게 무슨 성적을 내는지 재는 게 목적이다.\n"
+        if want > 0 else ""
+    )
     return f"""당신은 한국 주식 스윙 트레이딩 팀의 '선정자'다. 역할: 기회를 넉넉히 제시한다.
 뒤에 별도 판정자가 기각 기준으로 거르므로, 근거가 있으면 적극적으로 enter를 제안하라.
 단, 근거 없는 enter는 판정자가 기각한다 — 각 제안의 reason에 데이터 근거를 명시하라.
+{quota}
 
 [후보 종목]
 {cands}
@@ -90,10 +104,11 @@ def propose(
     pf: Portfolio,
     brain: str = "codex",
     runner: Callable[[str, str], str] | None = None,
+    want: int = 0,
 ) -> ValidationResult:
     run = runner or _run_cli
     try:
-        raw = run(brain, build_proposer_prompt(candidates, pf))
+        raw = run(brain, build_proposer_prompt(candidates, pf, want=want))
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         return ValidationResult(False, (f"proposer CLI error: {e}",), None)
     result = validate_brain_output(
@@ -226,8 +241,11 @@ def run_two_stage(
     judge_brain: str = "claude",
     proposer_runner: Callable[[str, str], str] | None = None,
     judge_runner: Callable[[str, str], str] | None = None,
+    want: int = 0,
 ) -> TwoStageResult:
-    prop = propose(candidates, pf, brain=proposer_brain, runner=proposer_runner)
+    """want>0 은 섀도 전용 확장 선정 경로에서만 쓴다 (실계좌는 기본값 0)."""
+    prop = propose(candidates, pf, brain=proposer_brain,
+                   runner=proposer_runner, want=want)
     if not prop.ok:
         return TwoStageResult(False, (), (), (), prop.errors)
 

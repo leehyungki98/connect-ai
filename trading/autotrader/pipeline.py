@@ -56,6 +56,37 @@ STOP_VOL_K = 2.5           # C2: 손절 거리 하한 배수
 MARKET_BREADTH_MIN = 0.5   # C2: 시장 폭 필터
 MAX_NEW_PER_DAY = 2        # C2: 일별 신규 진입 상한
 
+# 섀도 전용 확장 선정 개수. 실계좌와 무관 — 주문 경로에서 절대 참조하지 않는다.
+# 0 이면 확장 호출 자체를 안 한다(비용 0). 2026-07-21 사용자 승인으로 5.
+SHADOW_WIDE_N = 5
+
+
+def _shadow_wide_entries(candidates, pf, proposer_brain, judge_brain,
+                         proposer_runner, judge_runner, rank_of, already):
+    """섀도 기록용으로만 쓰는 확장 선정 — 선정자에게 최소 N개를 요구해 다시 받는다.
+
+    실계좌가 쓴 결과(ts)와 완전히 분리된 두 번째 호출이다. 여기서 나온 어떤 값도
+    주문·게이트·원장으로 흘러가지 않는다 — 반환값은 record_samples 로만 간다.
+    already: 실계좌 선정에 이미 들어간 종목(중복 기록 방지).
+
+    판정자까지 실계좌와 똑같이 태운다. 여기서 판정을 건너뛰면 나중에 성적이 나빠도
+    '순위가 낮아서'인지 '판정을 안 거쳐서'인지 구분할 수 없다 — 비교가 성립하지 않는다.
+    """
+    from autotrader.brain.two_stage import run_two_stage as _rts
+
+    wide = _rts(candidates, pf, proposer_brain, judge_brain,
+                proposer_runner, judge_runner, want=SHADOW_WIDE_N)
+    if not wide.ok:
+        return []
+    out = []
+    for d in wide.entries:
+        if d.symbol in already:
+            continue      # 실계좌 선정분은 origin='선정자'로 이미 기록됐다
+        out.append({"symbol": d.symbol, "entry_price": d.entry_price,
+                    "stop_price": d.stop_price, "target_price": d.target_price,
+                    "horizon_days": d.horizon_days, "rank": rank_of.get(d.symbol)})
+    return out
+
 
 @dataclass
 class RunReport:
@@ -243,14 +274,45 @@ def run_premarket(
                  "horizon_days": d.horizon_days}
                 for d in ts.entries
             ]
-            _names = shadow.resolve_names([d.symbol for d in ts.entries])
+            # 랭킹 전체 이름을 한 번에 (캐시라 두 번 부를 이유가 없다)
+            _rank_names = shadow.resolve_names([c.ranked.symbol for c in candidates])
+            _names = {d.symbol: _rank_names.get(d.symbol, d.symbol) for d in ts.entries}
             _today = today.isoformat()
+            _rank_of = {c.ranked.symbol: i + 1 for i, c in enumerate(candidates)}
+            for _e in _sh_entries:
+                _e["rank"] = _rank_of.get(_e["symbol"])
             # ① 계좌 — 실계좌 제약 그대로 (카드에 보이는 그것)
             shadow.record_entries(_today, _sh_entries, _vol20,
                                   breadth=breadth, names=_names)
             # ② 샘플 — 제약 없이 전부 (폭 구간별 표본을 빨리 쌓으려고)
             shadow.record_samples(_today, _sh_entries, _vol20,
-                                  breadth=breadth, names=_names)
+                                  breadth=breadth, names=_names, origin="선정자")
+            # ③ 랭킹 일지 — 상위 10개 중 안 뽑힌 것까지 전부. 공짜이고, '그날 몇 등'은
+            #    사후 재구성이 안 된다. 손절가가 없어 섀도 매매는 못 돌리지만
+            #    "순위가 실제 수익과 상관있나"는 나중에 일봉만 붙이면 답이 나온다.
+            _proposed = {d.symbol for d in ts.entries}
+            shadow.log_ranking(_today, [
+                {"symbol": c.ranked.symbol, "name": _rank_names.get(c.ranked.symbol),
+                 "rank": i + 1, "close": c.last_close,
+                 "ret20": round(c.ranked.ret20, 4), "ret60": round(c.ranked.ret60, 4),
+                 "vol20": round(c.ranked.vol20, 4),
+                 "proposed": c.ranked.symbol in _proposed}
+                for i, c in enumerate(candidates)
+            ], breadth=breadth)
+            # ④ 확장 선정 — 섀도 전용 별도 호출. 실계좌가 쓴 ts 는 손대지 않는다.
+            #    선정자가 스스로 고르면 하루 2개쯤이라 표본이 너무 느리게 쌓인다.
+            #    "3~5등까지 샀으면 어땠나"를 재려면 그 제안 자체가 있어야 한다.
+            #    실패해도 위 ①~③ 은 이미 기록됐다 (별도 try).
+            if SHADOW_WIDE_N > 0:
+                try:
+                    _wide = _shadow_wide_entries(
+                        candidates, pf, proposer_brain, judge_brain,
+                        proposer_runner, judge_runner, _rank_of, _proposed)
+                    if _wide:
+                        shadow.record_samples(_today, _wide, _vol20, breadth=breadth,
+                                              names=_rank_names, origin="확장")
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception:  # noqa: BLE001 — 표시/기록 실패는 절대 실매매를 막지 않는다
         pass
 

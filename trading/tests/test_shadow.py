@@ -13,6 +13,7 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(shadow, "TRADES_FILE", tmp_path / "shadow_trades.jsonl")
     monkeypatch.setattr(shadow, "SAMPLES_FILE", tmp_path / "shadow_samples.jsonl")
     monkeypatch.setattr(shadow, "BREADTH_FILE", tmp_path / "breadth_log.jsonl")
+    monkeypatch.setattr(shadow, "RANKING_FILE", tmp_path / "ranking_log.jsonl")
 
 
 def _entry(sym, entry, stop, target, horizon=10):
@@ -225,3 +226,65 @@ def test_breadth_log_daily_and_idempotent():
 def test_breadth_log_skips_none():
     shadow.log_breadth("2026-07-20", None)
     assert not shadow.BREADTH_FILE.exists()
+
+
+# ── 확장 선정 (섀도 전용) ─────────────────────────────────────────────
+
+def test_wide_never_touches_real_entries():
+    """확장은 기록 전용 — 실계좌 진입 경로(record_entries)로 절대 안 들어간다.
+
+    이게 깨지면 '데이터 모으려고 켠 확장'이 실제 주문 후보를 늘린다.
+    확장의 존재 이유가 실전 무영향이므로 이 테스트가 그 계약이다.
+    """
+    import inspect
+
+    from autotrader import pipeline
+    src = inspect.getsource(pipeline.run_premarket)
+    wide_call = src[src.index("_shadow_wide_entries("):]
+    # 확장 결과가 흘러가는 곳은 record_samples 뿐이어야 한다
+    assert "record_samples" in wide_call.split("except")[0]
+    assert "record_entries" not in wide_call.split("except")[0]
+    # 주문 루프는 확장 결과를 이름으로도 참조하지 않는다
+    order_loop = src[src.index("if ts.ok and not entries_blocked:"):]
+    assert "_wide" not in order_loop and "SHADOW_WIDE_N" not in order_loop
+
+
+def test_wide_prompt_only_when_asked():
+    """want=0(실계좌 기본)이면 프롬프트가 한 글자도 안 바뀐다."""
+    from autotrader.brain.two_stage import build_proposer_prompt
+    from autotrader.gates.types import Portfolio
+
+    pf = Portfolio(10_000_000, 10_000_000, {})
+    base = build_proposer_prompt([], pf)
+    assert base == build_proposer_prompt([], pf, want=0)
+    wide = build_proposer_prompt([], pf, want=5)
+    assert base != wide and "최소 5개" in wide
+
+
+def test_samples_carry_rank_and_origin():
+    """순위·출처가 안 남으면 1~2등과 3~5등이 섞여 평균난다."""
+    e = _entry("005930", 70000, 66000, 78000)
+    e["rank"] = 4
+    out = shadow.record_samples("2026-07-20", [e], {"005930": 0.02},
+                                breadth=0.3, origin="확장")
+    assert out[0]["rank"] == 4 and out[0]["origin"] == "확장"
+    # 기본값은 실계좌가 쓴 선정
+    out2 = shadow.record_samples("2026-07-20", [_entry("000660", 100, 90, 130)],
+                                 {"000660": 0.02})
+    assert out2[0]["origin"] == "선정자" and out2[0]["rank"] is None
+
+
+def test_ranking_log_keeps_all_and_is_idempotent(tmp_path):
+    """상위 랭킹 전체 기록 — 같은 날 재실행은 교체(중복 적재 금지)."""
+    p = tmp_path / "ranking.jsonl"
+    rows = [{"symbol": "005930", "rank": 1, "proposed": True},
+            {"symbol": "000660", "rank": 2, "proposed": False}]
+    shadow.log_ranking("2026-07-20", rows, breadth=0.42, path=p)
+    shadow.log_ranking("2026-07-20", rows, breadth=0.42, path=p)
+    lines = [x for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(lines) == 1
+    import json
+    rec = json.loads(lines[0])
+    assert len(rec["rows"]) == 2 and rec["breadth"] == 0.42
+    # 안 뽑힌 종목도 남아야 한다 — 버리면 사후 재구성이 안 된다
+    assert any(not r["proposed"] for r in rec["rows"])
