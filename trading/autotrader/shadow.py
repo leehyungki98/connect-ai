@@ -15,8 +15,8 @@ from pathlib import Path
 
 from autotrader.backtest import MAX_STOP_DIST, MIN_STOP_DIST
 from autotrader.execution.fills import (COMMISSION_PPM, _ceil_ppm,
-                                        fill_limit_sell, fill_market_sell,
-                                        fill_stop_sell)
+                                        fill_limit_buy, fill_limit_sell,
+                                        fill_market_sell, fill_stop_sell)
 from autotrader.execution.ticks import round_down_to_tick
 from autotrader.gates.types import Portfolio, Position
 from autotrader.sizing import position_size
@@ -63,8 +63,8 @@ COOLDOWN_BARS = 10           # C2 손절 후 재진입 금지 거래일
 
 
 def _fresh_state() -> dict:
-    return {"cash_krw": INITIAL_CAPITAL_KRW, "positions": {}, "cooldowns": {},
-            "last_date": None}
+    return {"cash_krw": INITIAL_CAPITAL_KRW, "positions": {}, "pending": [],
+            "cooldowns": {}, "last_date": None}
 
 
 def load_state() -> dict:
@@ -96,12 +96,14 @@ def adjusted_stop(entry: int, stop_price: int, vol20: float) -> int:
 
 
 def _portfolio(s: dict) -> Portfolio:
-    # 사이징용 — 보유는 진입원가로 평가(mark-to-cost). 근사지만 섀도 사이징엔 충분.
+    """사이징용. 보유는 진입원가 평가(mark-to-cost), 미체결 주문은 현금을 예약 처리
+    — 실전에서 같은 날 주문이 현금을 잠그는 것과 같다."""
     positions = {sym: Position(p["qty"], p["qty"] * p["entry_price"])
                  for sym, p in s["positions"].items()}
     holdings_val = sum(pos.value_krw for pos in positions.values())
-    equity = s["cash_krw"] + holdings_val
-    return Portfolio(equity, s["cash_krw"], positions)
+    reserved = sum(o["qty"] * o["limit_price"] for o in s.get("pending", []))
+    cash = max(0, s["cash_krw"] - reserved)
+    return Portfolio(cash + holdings_val + reserved, cash, positions)
 
 
 def record_entries(date: str, entries, vol20_by_symbol: dict,
@@ -121,8 +123,9 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
     new_today, events = 0, []
     for d in entries:
         sym = d["symbol"]
-        if sym in s["positions"]:
-            continue                                    # 이미 보유
+        if sym in s["positions"] or any(o["symbol"] == sym
+                                        for o in s.get("pending", [])):
+            continue                                    # 이미 보유 또는 주문 대기
         cd = s["cooldowns"].get(sym)
         if cd is not None and date < cd:
             continue                                    # 손절 쿨다운 중
@@ -134,16 +137,16 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
         qty = position_size(entry, stop, _portfolio(s))
         if qty <= 0:
             continue                                    # 사이징 0 (리스크/현금 한도)
+        # 실전과 동일: 지정가 '주문 예약'일 뿐 아직 체결 아니다. 장중 저가가 지정가에
+        # 닿아야 체결(settle_pending). 무조건 체결로 치면 낙관 편향이 생긴다.
         name = (names or {}).get(sym, sym)
-        cost = qty * entry
-        s["cash_krw"] -= cost + _ceil_ppm(cost, COMMISSION_PPM)
-        s["positions"][sym] = {
-            "name": name, "qty": qty, "entry_price": entry, "stop": stop,
-            "target": int(d["target_price"]), "horizon_days": int(d["horizon_days"]),
-            "entry_date": date,
-        }
-        rec = {"event": "entry", "date": date, "symbol": sym, "name": name,
-               "qty": qty, "entry_price": entry, "stop": stop,
+        order = {"symbol": sym, "name": name, "qty": qty, "limit_price": entry,
+                 "stop": stop, "target": int(d["target_price"]),
+                 "horizon_days": int(d["horizon_days"]),
+                 "order_date": date, "breadth": breadth}
+        s.setdefault("pending", []).append(order)
+        rec = {"event": "order", "date": date, "symbol": sym, "name": name,
+               "qty": qty, "limit_price": entry, "stop": stop,
                "target": int(d["target_price"]),
                "horizon_days": int(d["horizon_days"]), "breadth": breadth}
         events.append(rec)
@@ -153,6 +156,61 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
     if state is None:
         save_state(s)
     return events
+
+
+def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
+    """주문일 봉으로 지정가 매수 체결/미체결 판정 — 실전과 동일(저가 ≤ 지정가).
+
+    체결되면 포지션 개설(실제 체결가·수수료 반영), 안 되면 '미체결'로 기록하고 취소.
+    주문일 봉이 아직 없으면(장중) 그대로 대기. 반환: 체결·미체결 이벤트 목록.
+    """
+    s = state if state is not None else load_state()
+    events, still_pending = [], []
+    for o in s.get("pending", []):
+        sym, od = o["symbol"], o["order_date"]
+        bar = next((b for b in bars_by_symbol.get(sym, []) if b["date"] == od), None)
+        if bar is None:
+            still_pending.append(o)          # 주문일 봉 미확정 — 계속 대기
+            continue
+        fill = fill_limit_buy(sym, o["limit_price"], o["qty"],
+                              bar["open"], bar["low"], bar["volume"])
+        if fill is None:
+            rec = {"event": "unfilled", "date": od, "symbol": sym,
+                   "name": o.get("name", sym), "limit_price": o["limit_price"],
+                   "day_low": bar["low"], "breadth": o.get("breadth"),
+                   "failure_kind": "미체결"}
+            events.append(rec)
+            _append_trade(rec)
+            continue                          # 취소 — 실전에서도 안 사진 것
+        s["cash_krw"] += fill.net_krw          # 매수 net_krw 는 음수(대금+수수료)
+        s["positions"][sym] = {
+            "name": o.get("name", sym), "qty": fill.qty, "entry_price": fill.price,
+            "stop": o["stop"], "target": o["target"],
+            "horizon_days": o["horizon_days"], "entry_date": od,
+            "breadth": o.get("breadth"),
+        }
+        rec = {"event": "entry", "date": od, "symbol": sym,
+               "name": o.get("name", sym), "qty": fill.qty,
+               "entry_price": fill.price, "limit_price": o["limit_price"],
+               "stop": o["stop"], "target": o["target"],
+               "horizon_days": o["horizon_days"], "breadth": o.get("breadth")}
+        events.append(rec)
+        _append_trade(rec)
+    s["pending"] = still_pending
+    if state is None:
+        save_state(s)
+    return events
+
+
+def _failure_kind(reason: str, bar: dict, p: dict, held: int) -> str:
+    """청산 원인 분류 — 백데이터 분석용 (왜 실패했나)."""
+    if reason == "target":
+        return "목표달성"
+    if reason == "time":
+        return "기간만료"
+    if bar["open"] <= p["stop"]:
+        return "갭손절"      # 시가가 이미 손절 밑 — 손절이 못 지킴(오버나잇 리스크)
+    return "1봉손절" if held <= 1 else "손절"
 
 
 def resolve(bars_by_symbol: dict, state: dict = None) -> list:
@@ -182,7 +240,8 @@ def resolve(bars_by_symbol: dict, state: dict = None) -> list:
             realized = fill.net_krw - (cost + _ceil_ppm(cost, COMMISSION_PPM))
             rec = {"event": "exit", "date": bar["date"], "symbol": sym,
                    "name": p.get("name", sym),
-                   "reason": kind, "exit_price": fill.price,
+                   "reason": kind, "failure_kind": _failure_kind(kind, bar, p, held),
+                   "breadth": p.get("breadth"), "exit_price": fill.price,
                    "entry_date": p["entry_date"], "entry_price": p["entry_price"],
                    "qty": p["qty"], "hold_days": held,
                    "realized_krw": realized,

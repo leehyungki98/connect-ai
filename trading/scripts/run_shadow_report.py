@@ -16,17 +16,22 @@ MIN_SAMPLE = 20      # 버킷당 청산 이 개수 넘어야 '제안후보'
 BUCKETS = [(0, 20), (20, 30), (30, 40), (40, 50), (50, 101)]
 
 
-def _load_exits() -> list:
+def _load_events(event: str) -> list:
+    """원장에서 특정 이벤트만 (order / entry / exit / unfilled)."""
     if not shadow.TRADES_FILE.exists():
         return []
-    exits = []
+    out = []
     for line in shadow.TRADES_FILE.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
-        if r.get("event") == "exit":
-            exits.append(r)
-    return exits
+        if r.get("event") == event:
+            out.append(r)
+    return out
+
+
+def _load_exits() -> list:
+    return _load_events("exit")
 
 
 def _entry_breadth() -> dict:
@@ -87,8 +92,37 @@ def main() -> int:
                 hypotheses.append((f"{lo}~{hi}%", "강화후보",
                                    f"n={len(rows)} 중앙값{med:+.1f}% 손절{sr:.0f}% — 이 폭 더 빡세게(쿨다운/랭크상한) 검토"))
 
+    # ── 실패 원인 분류 (폭 구간별) — "왜 실패했나" 백데이터 ──
+    print("\n── 실패 원인 분포 (폭 구간별) ──")
+    kinds = ["목표달성", "갭손절", "1봉손절", "손절", "기간만료", "미체결"]
+    unfilled = _load_events("unfilled")
+    print(f"{'폭구간':>8} " + " ".join(f"{k:>7}" for k in kinds))
+    for lo, hi in BUCKETS:
+        rows = [e for e in exits + unfilled
+                if (b := (e.get("breadth") if e.get("breadth") is not None
+                          else eb.get((e["symbol"], e.get("entry_date", e.get("date")))))) is not None
+                and lo <= b * 100 < hi]
+        if not rows:
+            continue
+        counts = {k: sum(1 for e in rows if e.get("failure_kind") == k) for k in kinds}
+        print(f"{lo:>3}~{hi if hi <= 100 else 100:>2}%{'':>1} "
+              + " ".join(f"{counts[k]:>7}" for k in kinds))
+        # 처방 힌트 — 표본 충분할 때만
+        n = len(rows)
+        if n >= MIN_SAMPLE:
+            if counts["갭손절"] / n >= 0.4:
+                hypotheses.append((f"{lo}~{hi}%", "강화후보",
+                                   f"n={n} 갭손절 {counts['갭손절']}건({counts['갭손절']/n:.0%}) — 이 폭은 손절이 못 지킨다(오버나잇). 진입 자체를 더 조이거나 갭 리스크 필터 검토"))
+            if counts["1봉손절"] / n >= 0.35:
+                hypotheses.append((f"{lo}~{hi}%", "강화후보",
+                                   f"n={n} 1봉손절 {counts['1봉손절']}건 — 손절이 너무 타이트하거나 진입 타이밍 문제"))
+            if counts["미체결"] / n >= 0.4:
+                hypotheses.append((f"{lo}~{hi}%", "관찰",
+                                   f"n={n} 미체결 {counts['미체결']}건 — 지정가가 공격적이라 실제로는 못 산다(섀도 낙관 편향 아님, 실전 반영됨)"))
+
     print(f"\n※ 표본 {MIN_SAMPLE}건 미만 버킷은 가설 승격 안 함 (p-해킹 방지).")
     print("※ 평균만 X — 중앙값·손절%가 필터의 보호효과다. 둘 다 보고 판단.")
+    print("※ 진입은 실전과 동일하게 지정가 체결 조건(저가≤지정가) 적용 — 미체결도 기록된다.")
 
     if hypotheses:
         print("\n── 개선 가설 (제안후보) ──")

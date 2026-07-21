@@ -44,31 +44,50 @@ def main() -> int:
     today = date.today().isoformat()
     state = shadow.load_state()
     open_pos = state.get("positions", {})
-    if not open_pos:
-        print("보유 중 섀도 포지션 없음 — 청산할 것 없음.")
+    pending = state.get("pending", [])
+    if not open_pos and not pending:
+        print("보유·대기 섀도 없음 — 판정할 것 없음.")
         return 0
 
     _load_krx_env()
-    print(f"보유 섀도 {len(open_pos)}종목 → 일봉 조회 후 청산 판정")
+    print(f"대기 주문 {len(pending)}건 · 보유 {len(open_pos)}종목 → 일봉 조회")
     bars_by_symbol = {}
-    for sym, p in open_pos.items():
+    targets = {(o["symbol"], o["order_date"]) for o in pending}
+    targets |= {(sym, p["entry_date"]) for sym, p in open_pos.items()}
+    for sym, since in targets:
         try:
-            bars_by_symbol[sym] = _fetch_bars(sym, p["entry_date"], today)
+            bars = _fetch_bars(sym, since, today)
+            bars_by_symbol.setdefault(sym, [])
+            have = {b["date"] for b in bars_by_symbol[sym]}
+            bars_by_symbol[sym] += [b for b in bars if b["date"] not in have]
+            bars_by_symbol[sym].sort(key=lambda b: b["date"])
         except Exception as e:  # noqa: BLE001
-            print(f"  {sym}: 일봉 조회 실패 — 보유 유지 ({e})")
-            bars_by_symbol[sym] = []
+            print(f"  {sym}: 일봉 조회 실패 — 유지 ({e})")
+            bars_by_symbol.setdefault(sym, [])
 
+    # ① 지정가 매수 체결/미체결 판정 (실전과 동일: 저가 ≤ 지정가)
+    settled = shadow.settle_pending(bars_by_symbol)
+    for e in settled:
+        if e["event"] == "entry":
+            print(f"  체결 {e.get('name', e['symbol'])} · {e['qty']}주 @ {e['entry_price']:,}원 "
+                  f"(지정가 {e['limit_price']:,})")
+        else:
+            print(f"  미체결 {e.get('name', e['symbol'])} · 지정가 {e['limit_price']:,} "
+                  f"> 당일 저가 {e['day_low']:,} — 실전에서도 안 샀을 주문")
+
+    # ② 보유분 청산 판정 (손절 → 목표 → 기간)
     closed = shadow.resolve(bars_by_symbol)
     if not closed:
         print("청산 트리거 없음 — 전부 보유 유지.")
     else:
         for c in closed:
-            mark = {"stop": "손절", "target": "목표", "time": "기간"}.get(c["reason"], c["reason"])
-            print(f"  청산 {c['symbol']} · {mark} @ {c['exit_price']:,}원 · "
-                  f"{c['ret_pct']:+.2f}% · 보유 {c['hold_days']}일 · "
-                  f"실현 {c['realized_krw']:+,}원 ({c['entry_date']}→{c['date']})")
-    remaining = shadow.load_state().get("positions", {})
-    print(f"남은 보유 섀도: {len(remaining)}종목")
+            print(f"  청산 {c.get('name', c['symbol'])} · {c['failure_kind']} "
+                  f"@ {c['exit_price']:,}원 · {c['ret_pct']:+.2f}% · "
+                  f"보유 {c['hold_days']}일 · 실현 {c['realized_krw']:+,}원 "
+                  f"({c['entry_date']}→{c['date']})")
+    st = shadow.load_state()
+    print(f"남은 보유 {len(st.get('positions', {}))}종목 · "
+          f"대기 주문 {len(st.get('pending', []))}건")
     return 0
 
 
