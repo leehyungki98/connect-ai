@@ -29,6 +29,7 @@ C2 채택 파라미터 (2026-07-19, 2년 백테스트 검증 — MDD 4/4 구간 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -222,6 +223,25 @@ def run_premarket(
         report.skipped.append(
             f"시장 폭 {breadth:.0%} < {MARKET_BREADTH_MIN:.0%} — 신규 진입 중단 (C2)"
         )
+
+    # 섀도북: 판정자 통과분을 페이퍼로 기록 (주문 0). 폭 차단이라 실제로 못 사는 날에도
+    # "샀다면 어땠을지"를 백테스트와 동일 잣대로 남긴다. 순수 기록 — 실매매 무영향.
+    # try/except 전체 감쌈: 섀도 실패가 실제 파이프라인을 절대 못 죽인다.
+    try:
+        # PYTEST 중엔 섀도 기록 스킵 — 파이프라인 테스트가 실 ledger 를 오염시키지 않게.
+        # (섀도 자체 단위테스트는 격리 경로로 record_entries 를 직접 호출한다.)
+        if ts.ok and not os.environ.get("PYTEST_CURRENT_TEST"):
+            from autotrader import shadow
+            _vol20 = {c.ranked.symbol: c.ranked.vol20 for c in candidates}
+            _sh_entries = [
+                {"symbol": d.symbol, "entry_price": d.entry_price,
+                 "stop_price": d.stop_price, "target_price": d.target_price,
+                 "horizon_days": d.horizon_days}
+                for d in ts.entries
+            ]
+            shadow.record_entries(today.isoformat(), _sh_entries, _vol20, breadth=breadth)
+    except Exception:  # noqa: BLE001 — 표시/기록 실패는 절대 실매매를 막지 않는다
+        pass
 
     if ts.ok and not entries_blocked:
         cash_left = pf.cash_krw

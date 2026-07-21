@@ -7992,6 +7992,68 @@ function _tradingGateCardHtml(): string {
   </section>`;
 }
 
+/** 스윙팀 섀도 포트폴리오 — 페이퍼(주문 0). state/shadow_state·shadow_view(실시간
+ *  평가) + ledger/shadow/shadow_trades.jsonl(청산 내역) 읽기 전용. 미장 보유 스타일. */
+function _swingShadowCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
+    const sg = (n: number) => n > 0 ? '+' : '';
+    const root = _resolveTradingRoot();
+    let openRows = '', closedRows = '', realized = 0, openN = 0, closedN = 0, liveHdr = '';
+    try {
+        // 실시간 평가 (watch_shadow_live 가 쓴 것) 우선, 없으면 진입 데이터만
+        let view: any = null;
+        const vp = _tradingStatePath('shadow_view.json');
+        if (vp && fs.existsSync(vp)) { try { view = JSON.parse(fs.readFileSync(vp, 'utf-8')); } catch { /* skip */ } }
+        const sp = _tradingStatePath('shadow_state.json');
+        const state = (sp && fs.existsSync(sp)) ? JSON.parse(fs.readFileSync(sp, 'utf-8')) : { positions: {} };
+
+        const posList = view?.positions || Object.entries<any>(state.positions || {}).map(([symbol, p]: any) => ({ symbol, ...p, value_krw: null }));
+        for (const p of posList) {
+            openN++;
+            const live = (typeof p.value_krw === 'number') ? p.value_krw : null;
+            const pnl = (typeof p.pnl_krw === 'number') ? p.pnl_krw : null;
+            const ret = (typeof p.ret_pct === 'number') ? p.ret_pct : null;
+            openRows += `<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.12);font-size:12px">
+              <div style="display:flex;justify-content:space-between"><span style="font-weight:700">${esc(p.symbol)}</span>
+                ${live !== null ? `<span style="font-weight:600">₩${Number(live).toLocaleString()}</span>` : `<span style="opacity:.5">진입 ₩${Number(p.entry_price).toLocaleString()}</span>`}</div>
+              <div style="display:flex;justify-content:space-between;opacity:.6;margin-top:2px">
+                <span>${Number(p.qty).toLocaleString()}주 · 손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span>
+                ${pnl !== null ? `<span style="color:${col(pnl)};font-weight:600">${sg(pnl)}${Number(pnl).toLocaleString()} (${sg(ret || 0)}${ret}%)</span>` : `<span>${esc(p.entry_date)} 진입</span>`}</div></div>`;
+        }
+        // 청산 내역 (ledger)
+        if (root) {
+            const tp = path.join(root, 'ledger', 'shadow', 'shadow_trades.jsonl');
+            if (fs.existsSync(tp)) {
+                const exits = fs.readFileSync(tp, 'utf-8').trim().split('\n')
+                    .filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } })
+                    .filter((r: any) => r && r.event === 'exit');
+                closedN = exits.length;
+                for (const e of exits.slice(-6).reverse()) {
+                    realized += Number(e.realized_krw) || 0;
+                    const reason = { stop: '손절', target: '목표', time: '기간' }[e.reason as string] || e.reason;
+                    closedRows += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px solid rgba(128,128,128,.08)">
+                      <span><span style="font-weight:600">${esc(e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
+                      <span style="color:${col(e.realized_krw)}">${sg(e.ret_pct)}${e.ret_pct}% · ${sg(e.realized_krw)}₩${Number(e.realized_krw).toLocaleString()}</span></div>`;
+                }
+                realized = exits.reduce((a: number, e: any) => a + (Number(e.realized_krw) || 0), 0);
+            }
+        }
+        if (view) liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${esc(view.updated)} 갱신`;
+    } catch { /* 표시 전용 */ }
+    const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
+    const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
+    return `<section class="card span-7" id="swingShadowCard">
+    <div class="card-head"><div class="card-title"><span class="title-icon">🌓</span> 스윙팀 섀도 포트폴리오 (페이퍼)</div>
+    <span class="badge">보유 ${openN}</span></div>
+    <div style="font-size:11px;opacity:.6;margin-bottom:6px">주문 0 · 판정자 통과분을 실매매처럼 추적 · 실현손익 <span style="color:${col(realized)}">${sg(realized)}₩${Number(realized).toLocaleString()}</span> (청산 ${closedN}건)</div>
+    ${liveHdr ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px">${liveHdr}</div>` : ''}
+    <div>${openBlock}</div>
+    ${closedBlock}
+  </section>`;
+}
+
 /** 스윙팀 오늘의 선정 — trading/state/premarket_log.jsonl 읽기 전용.
  *  시장 폭 게이트·2슬롯·최근 이력을 시각화. "왜 매매 안해?"를 카드로 답한다.
  *  trading/ 코드 무접촉 (state 파일만 읽음). */
@@ -12240,6 +12302,8 @@ class CompanyDashboardPanel {
   ${_usLongtermPositionsCardHtml()}
 
   ${_swingSelectionCardHtml()}
+
+  ${_swingShadowCardHtml()}
 
   ${_tradingProposalsCardHtml()}
 
