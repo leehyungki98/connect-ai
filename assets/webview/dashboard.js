@@ -1163,6 +1163,11 @@ function showAgentDetailModal(a){
 window.addEventListener('message', e => {
   const m = e.data;
   if (m.type === 'state') render(m);
+  else if (m.type === 'swingShadowHtml') {
+    /* 섀도 카드만 교체 — 15분 시세 갱신 시 전체 재렌더 없이 이 카드만 (깜빡임 최소). */
+    const el = document.getElementById('swingShadowCard');
+    if (el && m.html) { const tmp = document.createElement('div'); tmp.innerHTML = m.html; if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild); }
+  }
   else if (m.type === 'toast') toast(m.text, m.err);
   else if (m.type === 'skillRunOutput') {
     /* v2.89.12 — 스킬 단독 실행 결과 라이브 표시 */

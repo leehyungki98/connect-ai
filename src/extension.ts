@@ -11483,6 +11483,7 @@ class CompanyDashboardPanel {
     private readonly _panel: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
     private _refreshTimer: NodeJS.Timeout | null = null;
+    private _shadowTimer: NodeJS.Timeout | null = null;
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.ViewColumn.Active;
@@ -11899,9 +11900,34 @@ class CompanyDashboardPanel {
         /* Periodic light refresh for time-based UI (countdowns) and remote state. */
         this._refreshTimer = setInterval(() => this._sendState().catch(() => {}), 30 * 1000);
         this._sendState().catch(() => { /* ignore boot */ });
+
+        /* 섀도 평가 15분 갱신 — 한국장 중 백그라운드로 준실시간 시세를 받아
+           shadow_view.json 갱신 후 카드만 다시 그린다 (깜빡임 없음, 전체 재렌더 X). */
+        this._shadowTimer = setInterval(() => this._refreshShadowCard(), 15 * 60 * 1000);
+        setTimeout(() => this._refreshShadowCard(), 8000);   // 패널 열고 8초 뒤 1회
     }
 
     public refresh() { this._sendState().catch(() => {}); }
+
+    /** 섀도 카드만 갱신 — 한국장 중이면 시세 받아 shadow_view.json 쓰고, 카드 HTML 재전송. */
+    private _refreshShadowCard(): void {
+        const now = new Date();
+        const day = now.getDay();          // 0=일 6=토
+        const mins = now.getHours() * 60 + now.getMinutes();
+        const krMarketOpen = day >= 1 && day <= 5 && mins >= 9 * 60 && mins <= 15 * 60 + 30;
+        const post = () => {
+            try { this._panel.webview.postMessage({ type: 'swingShadowHtml', html: _swingShadowCardHtml() }); } catch { /* ignore */ }
+        };
+        const root = _resolveTradingRoot();
+        if (krMarketOpen && root) {
+            /* 준실시간 시세 갱신을 백그라운드로 (yfinance 조회 몇 초). 끝나면 카드 재전송. */
+            runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_shadow_refresh.py')}`,
+                root, () => {}, 60000, 'both', { PYTHONIOENCODING: 'utf-8' })
+                .then(() => post()).catch(() => post());
+        } else {
+            post();   // 장 마감 중엔 시세 갱신 없이 카드만 재전송 (보유·청산 변화 반영)
+        }
+    }
 
     private _postToast(text: string, err = false) {
         try { this._panel.webview.postMessage({ type: 'toast', text, err }); } catch { /* ignore */ }
@@ -12215,6 +12241,7 @@ class CompanyDashboardPanel {
     private _dispose() {
         CompanyDashboardPanel.current = null;
         if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
+        if (this._shadowTimer) { clearInterval(this._shadowTimer); this._shadowTimer = null; }
         while (this._disposables.length) {
             const d = this._disposables.pop();
             try { d?.dispose(); } catch {}
