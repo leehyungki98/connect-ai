@@ -8049,7 +8049,13 @@ function _swingShadowCardHtml(): string {
                 realized = exits.reduce((a: number, e: any) => a + (Number(e.realized_krw) || 0), 0);
             }
         }
-        if (view) liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${esc(view.updated)} 갱신`;
+        if (view) {
+            /* 종가 스냅샷은 찍은 시각이 아니라 '종가'로 적는다 — 15:50 에 찍어도 값은 15:30 종가다. */
+            const stamp = view.session === '종가'
+                ? `${esc(String(view.updated).slice(5, 10))} 종가`
+                : `${esc(view.updated)} 갱신`;
+            liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${stamp}`;
+        }
     } catch { /* 표시 전용 */ }
     const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
     const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
@@ -11493,6 +11499,7 @@ class CompanyDashboardPanel {
     private _disposables: vscode.Disposable[] = [];
     private _refreshTimer: NodeJS.Timeout | null = null;
     private _shadowTimer: NodeJS.Timeout | null = null;
+    private _shadowCloseDate = '';      // 종가 스냅샷을 찍은 날 (하루 1회 보장)
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.ViewColumn.Active;
@@ -11923,14 +11930,23 @@ class CompanyDashboardPanel {
         const now = new Date();
         const day = now.getDay();          // 0=일 6=토
         const mins = now.getHours() * 60 + now.getMinutes();
-        const krMarketOpen = day >= 1 && day <= 5 && mins >= 9 * 60 && mins <= 15 * 60 + 30;
+        const weekday = day >= 1 && day <= 5;
+        const krMarketOpen = weekday && mins >= 9 * 60 && mins <= 15 * 60 + 30;
+        /* 종가 스냅샷 — 15분 타이머는 패널 연 시각 기준이라 마지막 장중 틱이 15:15~15:30
+           아무데나 떨어진다. 그대로 두면 카드가 종가가 아니라 그 시각 가격에서 멈춘다
+           (실제로 15:24 에 멈춰 있었다). 마감 후 하루 한 번 종가로 덮어쓴다.
+           15:50 이후인 이유 — 시세가 약 15분 지연이라 그 전엔 15:30 종가가 아직 안 온다. */
+        const today = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+        const needClose = weekday && mins >= 15 * 60 + 50 && this._shadowCloseDate !== today;
         const post = () => {
             try { this._panel.webview.postMessage({ type: 'swingShadowHtml', html: _swingShadowCardHtml() }); } catch { /* ignore */ }
         };
         const root = _resolveTradingRoot();
-        if (krMarketOpen && root) {
+        if ((krMarketOpen || needClose) && root) {
+            if (needClose) this._shadowCloseDate = today;   // 재시도 폭주 방지 — 실패해도 다음 날 다시
             /* 준실시간 시세 갱신을 백그라운드로 (yfinance 조회 몇 초). 끝나면 카드 재전송. */
-            runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_shadow_refresh.py')}`,
+            const args = needClose ? ' --close' : '';
+            runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_shadow_refresh.py')}${args}`,
                 root, () => {}, 60000, 'both', { PYTHONIOENCODING: 'utf-8' })
                 .then(() => post()).catch(() => post());
         } else {

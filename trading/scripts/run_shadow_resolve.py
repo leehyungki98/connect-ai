@@ -110,6 +110,15 @@ def main() -> int:
     done = [r for r in all_s if r.get("status") in ("closed", "unfilled")]
     print(f"[샘플] 누적 {len(all_s)}건 · 판정완료 {len(done)}건 "
           f"(폭 구간별 분석은 run_shadow_report.py)")
+
+    # ④ 카드 종가 스냅샷 — 대시보드 15분 갱신은 패널을 열어둬야 돌고, 마지막 장중 틱이
+    #    15:30 이전 아무데나 떨어져 종가를 놓친다. 스케줄로 도는 여기서 확정한다.
+    try:
+        import run_shadow_refresh
+        sys.argv = [sys.argv[0], "--close"]
+        run_shadow_refresh.main()
+    except Exception as e:  # noqa: BLE001
+        print(f"  카드 종가 스냅샷 실패 — 표시 전용이라 무시 ({e})")
     return 0
 
 

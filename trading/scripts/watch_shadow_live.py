@@ -45,7 +45,9 @@ def _prices(symbols) -> dict:
     return out
 
 
-def _build_view(state: dict, prices: dict) -> dict:
+def _build_view(state: dict, prices: dict, session: str = "장중") -> dict:
+    """session: '장중' | '종가'. 종가 스냅샷은 실행 시각이 아니라 '종가'로 표시한다 —
+    15:50 에 찍어도 값은 15:30 종가라, 실행 시각을 보여주면 거짓말이 된다."""
     rows, tot_val, tot_cost = [], 0, 0
     for sym, p in state.get("positions", {}).items():
         price = prices.get(sym, p["entry_price"])   # 못 받으면 진입가로 대체
@@ -65,6 +67,7 @@ def _build_view(state: dict, prices: dict) -> dict:
     return {"positions": rows, "cash_krw": cash,
             "total_value_krw": tot_val + cash, "total_pnl_krw": tot_val - tot_cost,
             "total_ret_pct": round((tot_val - tot_cost) / tot_cost * 100, 2) if tot_cost else 0.0,
+            "session": session,
             "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
 
 
