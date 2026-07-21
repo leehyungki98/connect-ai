@@ -11,6 +11,8 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(shadow, "STATE_FILE", tmp_path / "shadow_state.json")
     monkeypatch.setattr(shadow, "LEDGER_DIR", tmp_path)
     monkeypatch.setattr(shadow, "TRADES_FILE", tmp_path / "shadow_trades.jsonl")
+    monkeypatch.setattr(shadow, "SAMPLES_FILE", tmp_path / "shadow_samples.jsonl")
+    monkeypatch.setattr(shadow, "BREADTH_FILE", tmp_path / "breadth_log.jsonl")
 
 
 def _entry(sym, entry, stop, target, horizon=10):
@@ -177,3 +179,49 @@ def test_failure_kind_target_and_time():
         _fill(s, "005930", "2026-07-20", 70000, 70500, 69500)
         closed = shadow.resolve({"005930": [_bar("2026-07-21", o, hi, lo)]}, state=s)
         assert closed[0]["failure_kind"] == want
+
+
+def test_samples_ignore_account_limits():
+    """샘플은 계좌 제약(일2종목·현금) 무시하고 전부 기록 — 폭 표본 확보용."""
+    entries = [_entry(f"00000{i}", 10000, 9500, 11000) for i in range(5)]
+    out = shadow.record_samples("2026-07-20", entries, {}, breadth=0.24)
+    assert len(out) == 5                       # 계좌는 2건인데 샘플은 5건 전부
+    assert all(r["breadth"] == 0.24 for r in out)
+    assert all(r["status"] == "pending" for r in out)
+
+
+def test_sample_resolve_fill_and_close():
+    """샘플도 계좌와 동일 로직으로 체결→청산 (제약만 없다)."""
+    shadow.record_samples("2026-07-20", [_entry("005930", 70000, 66000, 78000)],
+                          {"005930": 0.0}, breadth=0.24)
+    bars = {"005930": [_bar("2026-07-20", 70000, 70500, 69500),
+                       _bar("2026-07-21", 75000, 79000, 74000)]}   # 목표 도달
+    stat = shadow.resolve_samples(bars)
+    assert stat["filled"] == 1 and stat["closed"] == 1
+    r = shadow.load_samples()[0]
+    assert r["status"] == "closed" and r["failure_kind"] == "목표달성"
+
+
+def test_sample_unfilled_recorded():
+    shadow.record_samples("2026-07-20", [_entry("005930", 70000, 66000, 78000)],
+                          {"005930": 0.0}, breadth=0.14)
+    bars = {"005930": [_bar("2026-07-20", 71000, 72000, 70500)]}   # 저가 > 지정가
+    stat = shadow.resolve_samples(bars)
+    assert stat["unfilled"] == 1
+    assert shadow.load_samples()[0]["failure_kind"] == "미체결"
+
+
+def test_breadth_log_daily_and_idempotent():
+    """폭 일지 — 매일 한 줄, 같은 날 재실행은 마지막 값으로 교체."""
+    shadow.log_breadth("2026-07-20", 0.24)
+    shadow.log_breadth("2026-07-21", 0.14)
+    shadow.log_breadth("2026-07-21", 0.15)      # 같은 날 재실행
+    import json
+    rows = [json.loads(x) for x in shadow.BREADTH_FILE.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert [r["date"] for r in rows] == ["2026-07-20", "2026-07-21"]
+    assert rows[1]["breadth"] == 0.15           # 마지막 값
+
+
+def test_breadth_log_skips_none():
+    shadow.log_breadth("2026-07-20", None)
+    assert not shadow.BREADTH_FILE.exists()

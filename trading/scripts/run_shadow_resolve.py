@@ -45,15 +45,19 @@ def main() -> int:
     state = shadow.load_state()
     open_pos = state.get("positions", {})
     pending = state.get("pending", [])
-    if not open_pos and not pending:
+    samples = [r for r in shadow.load_samples()
+               if r.get("status") in ("pending", "filled")]
+    if not open_pos and not pending and not samples:
         print("보유·대기 섀도 없음 — 판정할 것 없음.")
         return 0
 
     _load_krx_env()
-    print(f"대기 주문 {len(pending)}건 · 보유 {len(open_pos)}종목 → 일봉 조회")
+    print(f"[계좌] 대기 {len(pending)}건 · 보유 {len(open_pos)}종목 | "
+          f"[샘플] 미결 {len(samples)}건 → 일봉 조회")
     bars_by_symbol = {}
     targets = {(o["symbol"], o["order_date"]) for o in pending}
     targets |= {(sym, p["entry_date"]) for sym, p in open_pos.items()}
+    targets |= {(r["symbol"], r.get("entry_date") or r["date"]) for r in samples}
     for sym, since in targets:
         try:
             bars = _fetch_bars(sym, since, today)
@@ -86,8 +90,18 @@ def main() -> int:
                   f"보유 {c['hold_days']}일 · 실현 {c['realized_krw']:+,}원 "
                   f"({c['entry_date']}→{c['date']})")
     st = shadow.load_state()
-    print(f"남은 보유 {len(st.get('positions', {}))}종목 · "
-          f"대기 주문 {len(st.get('pending', []))}건")
+    print(f"[계좌] 남은 보유 {len(st.get('positions', {}))}종목 · "
+          f"대기 {len(st.get('pending', []))}건")
+
+    # ③ 샘플 판정 — 계좌와 동일 로직, 제약만 없다 (폭 구간별 표본용)
+    stat = shadow.resolve_samples(bars_by_symbol)
+    if any(stat.values()):
+        print(f"[샘플] 체결 {stat['filled']} · 미체결 {stat['unfilled']} · "
+              f"청산 {stat['closed']}")
+    all_s = shadow.load_samples()
+    done = [r for r in all_s if r.get("status") in ("closed", "unfilled")]
+    print(f"[샘플] 누적 {len(all_s)}건 · 판정완료 {len(done)}건 "
+          f"(폭 구간별 분석은 run_shadow_report.py)")
     return 0
 
 

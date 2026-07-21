@@ -1,0 +1,2 @@
+{"event": "sample_order", "date": "2026-07-21", "symbol": "161390", "name": "한국타이어앤테크놀로지", "qty": 21, "limit_price": 70100, "stop": 63652, "target": 78000, "horizon_days": 20, "breadth": 0.14, "status": "filled", "entry_price": 69135, "entry_date": "2026-07-21"}
+{"event": "sample_order", "date": "2026-07-21", "symbol": "086790", "name": "하나금융지주", "qty": 11, "limit_price": 133400, "stop": 124286, "target": 145000, "horizon_days": 15, "breadth": 0.14, "status": "filled", "entry_price": 131266, "entry_date": "2026-07-21"}

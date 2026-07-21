@@ -230,6 +230,10 @@ def run_premarket(
     try:
         # PYTEST 중엔 섀도 기록 스킵 — 파이프라인 테스트가 실 ledger 를 오염시키지 않게.
         # (섀도 자체 단위테스트는 격리 경로로 record_entries 를 직접 호출한다.)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            from autotrader import shadow
+            # 폭 일지는 판정자 성공 여부와 무관하게 매일 남긴다 (사후 재구성 불가).
+            shadow.log_breadth(today.isoformat(), breadth)
         if ts.ok and not os.environ.get("PYTEST_CURRENT_TEST"):
             from autotrader import shadow
             _vol20 = {c.ranked.symbol: c.ranked.vol20 for c in candidates}
@@ -240,7 +244,12 @@ def run_premarket(
                 for d in ts.entries
             ]
             _names = shadow.resolve_names([d.symbol for d in ts.entries])
-            shadow.record_entries(today.isoformat(), _sh_entries, _vol20,
+            _today = today.isoformat()
+            # ① 계좌 — 실계좌 제약 그대로 (카드에 보이는 그것)
+            shadow.record_entries(_today, _sh_entries, _vol20,
+                                  breadth=breadth, names=_names)
+            # ② 샘플 — 제약 없이 전부 (폭 구간별 표본을 빨리 쌓으려고)
+            shadow.record_samples(_today, _sh_entries, _vol20,
                                   breadth=breadth, names=_names)
     except Exception:  # noqa: BLE001 — 표시/기록 실패는 절대 실매매를 막지 않는다
         pass

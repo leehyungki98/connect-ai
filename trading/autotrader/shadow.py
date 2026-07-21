@@ -25,7 +25,9 @@ _BASE = Path(__file__).resolve().parents[1]
 STATE_FILE = _BASE / "state" / "shadow_state.json"          # 운영 데이터 (커밋 제외)
 NAMES_FILE = _BASE / "state" / "symbol_names.json"          # 코드→종목명 캐시
 LEDGER_DIR = _BASE / "ledger" / "shadow"                    # 학습 자산 (git 추적)
-TRADES_FILE = LEDGER_DIR / "shadow_trades.jsonl"            # 진입·청산 이벤트 이력
+TRADES_FILE = LEDGER_DIR / "shadow_trades.jsonl"            # 계좌: 진입·청산 이력
+SAMPLES_FILE = LEDGER_DIR / "shadow_samples.jsonl"          # 샘플: 제약 없이 전부
+BREADTH_FILE = LEDGER_DIR / "breadth_log.jsonl"             # 폭 일지 (매일 한 줄)
 
 
 def resolve_names(codes, lookup=None) -> dict:
@@ -86,6 +88,70 @@ def _append_trade(rec: dict) -> None:
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     with open(TRADES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def log_breadth(date: str, breadth: float, path: Path = None) -> None:
+    """폭 일지 — 매일 한 줄. 지금은 기록만 하고 분석은 나중에 켠다.
+
+    폭은 이미 매일 계산되지만 차단 메시지 텍스트에만 묻혀 있어 데이터로 못 썼다.
+    과거 폭(그날 유니버스 200종목의 20일선 위 비율)은 사후 재구성이 어렵다 —
+    오늘 안 적으면 오늘 데이터는 영영 없다. 같은 날 재실행은 마지막 값으로 교체.
+    """
+    if breadth is None:
+        return
+    p = path or BREADTH_FILE
+    rows = []
+    if p.exists():
+        try:
+            rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()
+                    if x.strip() and json.loads(x).get("date") != date]
+        except (OSError, ValueError):
+            rows = []
+    rows.append({"date": date, "breadth": round(float(breadth), 4)})
+    rows.sort(key=lambda r: r["date"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def record_samples(date: str, entries, vol20_by_symbol: dict,
+                   breadth: float = None, names: dict = None,
+                   path: Path = None) -> list:
+    """샘플 — 계좌 제약(현금·일2종목·보유중) **무시하고 판정자 통과분을 전부** 기록.
+
+    왜: 계좌는 3~4일이면 꽉 차 그 뒤 몇 주간 폭이 샘플링되지 않는다. 게다가
+    '돈이 남아있던 날'만 남아 편향된다. 가짜 돈이니 제약 없이 매일 다 남겨
+    폭 구간별 표본을 빨리 쌓는다.
+
+    ⚠ 합산 수익률을 '이만큼 벌었다'로 읽으면 안 된다 — 동시에 다 살 수 없었다.
+       개별 트레이드 통계(승률·중앙값·실패분류)를 폭 구간별로 보는 용도다.
+    사이징은 '갓 만든 1,000만원 계좌에서 이 트레이드만' 기준 (일관성).
+    """
+    p = path or SAMPLES_FILE
+    fresh = Portfolio(INITIAL_CAPITAL_KRW, INITIAL_CAPITAL_KRW, {})
+    out = []
+    for d in entries:
+        sym = d["symbol"]
+        entry = round_down_to_tick(int(d["entry_price"]))
+        stop = adjusted_stop(entry, int(d["stop_price"]),
+                             float(vol20_by_symbol.get(sym, 0.0)))
+        qty = position_size(entry, stop, fresh)
+        if qty <= 0:
+            continue
+        out.append({
+            "event": "sample_order", "date": date, "symbol": sym,
+            "name": (names or {}).get(sym, sym), "qty": qty,
+            "limit_price": entry, "stop": stop, "target": int(d["target_price"]),
+            "horizon_days": int(d["horizon_days"]), "breadth": breadth,
+            "status": "pending",
+        })
+    if out:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            for r in out:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return out
 
 
 def adjusted_stop(entry: int, stop_price: int, vol20: float) -> int:
@@ -200,6 +266,74 @@ def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
     if state is None:
         save_state(s)
     return events
+
+
+def load_samples(path: Path = None) -> list:
+    p = path or SAMPLES_FILE
+    if not p.exists():
+        return []
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()
+            if x.strip()]
+
+
+def _save_samples(rows: list, path: Path = None) -> None:
+    p = path or SAMPLES_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def resolve_samples(bars_by_symbol: dict, path: Path = None) -> dict:
+    """샘플을 계좌와 **동일 로직**으로 체결·청산 판정 (제약만 없을 뿐 잣대는 같다).
+
+    pending → 주문일 봉으로 지정가 체결 판정 → filled / unfilled
+    filled  → 손절 → 목표 → 기간 순 청산, 실패 원인까지 분류 → closed
+    반환: {"filled": n, "unfilled": n, "closed": n}
+    """
+    rows = load_samples(path)
+    stat = {"filled": 0, "unfilled": 0, "closed": 0}
+    for r in rows:
+        bars = bars_by_symbol.get(r["symbol"], [])
+        if r.get("status") == "pending":
+            bar = next((b for b in bars if b["date"] == r["date"]), None)
+            if bar is None:
+                continue                       # 주문일 봉 미확정 — 대기
+            fill = fill_limit_buy(r["symbol"], r["limit_price"], r["qty"],
+                                  bar["open"], bar["low"], bar["volume"])
+            if fill is None:
+                r.update(status="unfilled", failure_kind="미체결",
+                         day_low=bar["low"])
+                stat["unfilled"] += 1
+                continue
+            r.update(status="filled", entry_price=fill.price,
+                     entry_date=r["date"], qty=fill.qty)
+            stat["filled"] += 1
+        if r.get("status") != "filled":
+            continue
+        # 청산 판정 — 진입일 이후 봉
+        after = [b for b in bars if b["date"] > r["entry_date"]]
+        for held, bar in enumerate(after, start=1):
+            kind, fill = "stop", fill_stop_sell(
+                r["symbol"], r["stop"], r["qty"], bar["open"], bar["low"], bar["volume"])
+            if fill is None:
+                kind, fill = "target", fill_limit_sell(
+                    r["symbol"], r["target"], r["qty"], bar["open"], bar["high"], bar["volume"])
+            if fill is None and held >= r["horizon_days"]:
+                kind, fill = "time", fill_market_sell(
+                    r["symbol"], r["qty"], bar["open"], bar["volume"])
+            if fill is None:
+                continue
+            cost = r["qty"] * r["entry_price"]
+            r.update(status="closed", exit_date=bar["date"], exit_price=fill.price,
+                     reason=kind, hold_days=held,
+                     failure_kind=_failure_kind(kind, bar, r, held),
+                     realized_krw=fill.net_krw - (cost + _ceil_ppm(cost, COMMISSION_PPM)),
+                     ret_pct=round((fill.price / r["entry_price"] - 1) * 100, 2))
+            stat["closed"] += 1
+            break
+    _save_samples(rows, path)
+    return stat
 
 
 def _failure_kind(reason: str, bar: dict, p: dict, held: int) -> str:
