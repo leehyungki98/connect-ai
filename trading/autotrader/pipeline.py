@@ -38,6 +38,7 @@ from typing import Callable, Sequence
 from autotrader.backtest import MAX_STOP_DIST, MIN_STOP_DIST
 from autotrader.brain.client import Candidate
 from autotrader.brain.two_stage import run_two_stage
+from autotrader.config import ACCOUNT_BASELINE_KRW, SWING_ALLOCATION_KRW
 from autotrader.execution.fills import COMMISSION_PPM, _ceil_ppm
 from autotrader.execution.holdings import HoldingMeta, HoldingsStore, reconcile
 from autotrader.execution.order_ledger import LedgerCorrupted, OrderLedger
@@ -86,6 +87,25 @@ def _shadow_wide_entries(candidates, pf, proposer_brain, judge_brain,
                     "stop_price": d.stop_price, "target_price": d.target_price,
                     "horizon_days": d.horizon_days, "rank": rank_of.get(d.symbol)})
     return out
+
+
+def desk_portfolio(pf: Portfolio, allocation_krw: int = SWING_ALLOCATION_KRW) -> Portfolio:
+    """계좌 잔고 → 스윙 데스크 지분으로 축소. 총자본 1,000만원의 25% 만 굴린다.
+
+    KIS 모의계좌엔 1,000만원이 들어있고 줄일 수단이 없다. 그래서 계좌를 그대로 쓰면
+    설계상 250만원인 데스크가 실제로는 1,000만원을 굴린다 (2026-07-22 발견).
+
+    지분 = 배분액 + (현재 평가액 − 계좌 최초 잔고).
+    이 계좌는 스윙 외 매매가 없으므로 계좌 손익 = 스윙 손익이다. 그래서 벌면 지분이
+    늘고 잃으면 준다 — 배분액을 고정 상한으로 쓰면 번 돈이 재투자되지 않아 복리가 죽는다.
+
+    보유 평가액은 그대로 두고 현금만 줄인다. 이미 산 주식을 없는 셈 칠 수는 없다.
+    현금이 음수가 되는 경우(=배분액을 넘게 보유 중)는 0 으로 막아 신규 진입만 멈춘다.
+    """
+    holdings_val = pf.equity_krw - pf.cash_krw
+    desk_equity = allocation_krw + (pf.equity_krw - ACCOUNT_BASELINE_KRW)
+    desk_cash = max(0, min(pf.cash_krw, desk_equity - holdings_val))
+    return Portfolio(max(0, desk_equity), desk_cash, pf.positions)
 
 
 @dataclass
@@ -159,11 +179,19 @@ def run_premarket(
     judge_runner: Callable | None = None,
     top_n: int = 10,
     order_ledger_file: Path | None = None,
+    allocation_krw: int | None = SWING_ALLOCATION_KRW,
 ) -> RunReport:
+    """allocation_krw: 이 데스크에 배분된 자본. None 이면 계좌 잔고를 그대로 쓴다.
+
+    None 은 사이징 산수만 검증하는 단위테스트용이다 — 운영 경로는 기본값을 쓰며,
+    tests/test_desk_allocation.py 가 기본값이 배분액임을 고정한다.
+    """
     report = RunReport(date=today.isoformat())
 
     # --- 1~2. 잔고 → 안전 게이트 ---
     pf = kis.get_portfolio()
+    if allocation_krw is not None:
+        pf = desk_portfolio(pf, allocation_krw)
     equity_start = _day_start_equity(day_start_file, today, pf.equity_krw)
     if equity_start is None:
         report.blocked = "day_start state corrupted (fail-closed)"

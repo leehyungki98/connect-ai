@@ -85,11 +85,20 @@ def setup(tmp_path, pf, prices):
     return ks, guard, store, kis
 
 
-def run(kis, guard, store, tmp_path, runner, universe=None, judge=judge_pass_all):
+def run(kis, guard, store, tmp_path, runner, universe=None, judge=judge_pass_all,
+        allocation_krw=None):
+    """allocation_krw=None — 이 파일은 사이징 산수와 게이트 배선을 본다.
+
+    데스크 배분(계좌 1,000만 → 지분 250만) 자체는 tests/test_desk_allocation.py 가
+    따로 검증한다. 여기서까지 배분을 켜면 fixture 금액이 전부 지분 기준으로
+    바뀌어, 정작 이 파일이 지키려는 '현금이 매수마다 차감되는가' 같은 성질이
+    15% 종목 한도에 가려 안 보이게 된다.
+    """
     return run_premarket(
         kis, guard, store, universe or uptrend_universe(), TODAY,
         tmp_path / "day_start.json", tmp_path / "cooldowns.json",
         proposer_runner=runner, judge_runner=judge,
+        allocation_krw=allocation_krw,
     )
 
 
