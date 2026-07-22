@@ -8276,6 +8276,7 @@ function _usLongtermPositionsCardHtml(): string {
     let count = 0;
     let header = '';
     let rows = '';
+    let ddayBanner = '';
     try {
         const vp = _usLongtermStatePath('positions_view.json');
         if (vp && fs.existsSync(vp)) {
@@ -8307,6 +8308,15 @@ function _usLongtermPositionsCardHtml(): string {
             }
             const t = v.total || {};
             header = `평가 ₩${Number(t.value_krw).toLocaleString()} · <span style="color:${col(t.pnl_usd)}">평가손익 ${sign(t.pnl_usd)}$${Number(t.pnl_usd).toFixed(2)} (${sign(t.ret_pct)}${Number(t.ret_pct).toFixed(2)}%)</span><br><span style="opacity:.6">${v.session === '장중' ? `${esc(v.updated || v.asof)} 장중` : `${esc(v.asof)} 종가`} 기준 · 환율 ${Number(v.usdkrw).toLocaleString()}${v.session === '장중' ? '' : ' · 미국장 마감 중'}</span>`;
+            /* 분기 점검일 D-7 카운트다운. 리밸런싱은 자동이 아니라 사람이 여는 절차라
+               '언제인지 몰라 놓치는' 게 실제 실패 모드다. 창 밖이면 아무것도 안 그린다. */
+            if (v.rebalance_notice) {
+                const dd = Number(v.rebalance_dday);
+                const urgent = dd <= 2;
+                ddayBanner = `<div style="margin:8px 0;padding:7px 10px;border-radius:6px;font-size:11px;font-weight:600;background:${urgent ? 'rgba(229,72,77,.13)' : 'rgba(245,158,11,.12)'};border:1px solid ${urgent ? 'rgba(229,72,77,.35)' : 'rgba(245,158,11,.3)'}">
+                  &#128276; 리밸런싱 <b>D-${dd}</b> &middot; ${esc(v.rebalance_date)} 분기 점검일
+                  <div style="opacity:.7;font-weight:400;margin-top:2px">밴드 이탈 확인 &rarr; 논지 재판정 &rarr; 실행은 승인 후</div></div>`;
+            }
         } else {
             // 폴백: positions_view 없으면 수량만 (run_daily 미실행)
             const hp = _usLongtermStatePath('holdings.json');
@@ -8329,6 +8339,7 @@ function _usLongtermPositionsCardHtml(): string {
       <span class="badge">${count}</span>
     </div>
     ${header ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px;line-height:1.6">${header}</div>` : ''}
+    ${ddayBanner}
     <div>${body}</div>
   </section>`;
 }

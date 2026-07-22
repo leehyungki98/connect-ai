@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from longcore import positions, store  # noqa: E402
+from longcore import positions, schedule, store  # noqa: E402
 from longcore.clock import is_partial_bar, us_eastern_now  # noqa: E402
 from longcore.config import BUCKETS, FX_TICKER, INDEX_LOOKTHROUGH  # noqa: E402
 from longcore.data import fetch_history  # noqa: E402
@@ -68,6 +68,13 @@ def _write_positions_history(bucket, holding, hist, usdkrw, inception_date):
 def main() -> int:
     holdings = store.load_holdings()
     exit_code = 0
+    # 분기 점검일 카운트다운 — D-7 부터. 리밸런싱은 자동이 아니라 사람이 여는 절차라
+    # '언제인지 몰라서 놓치는' 게 실제 실패 모드다. 창 밖이면 아무것도 안 찍는다.
+    from datetime import date as _date
+    notice = schedule.countdown_line(_date.today())
+    if notice:
+        print(notice)
+        print("   준비: 밴드 이탈 확인 → 논지 재판정 → 리밸런싱 실행은 승인 후")
     for bucket, cfg in BUCKETS.items():
         holding = holdings.get(bucket)
         if not holding or not holding.get("initialized"):

@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from longcore import positions, store  # noqa: E402
+from longcore import positions, schedule, store  # noqa: E402
 from longcore.clock import us_eastern_now  # noqa: E402
 from longcore.config import BUCKETS, FX_TICKER  # noqa: E402
 from longcore.data import fetch_history  # noqa: E402
@@ -77,8 +77,14 @@ def main() -> int:
             tot_cost += ev["cost_usd"]
         rows.sort(key=lambda r: -r["value_usd"])
         cash = holding["cash_usd"]
+        from datetime import date as _date
         view = {
             "asof": asof.isoformat(), "session": session,
+            # 분기 점검일 카운트다운 (D-7 부터, 창 밖이면 None). 표시 전용 추정이며
+            # 체결 허가는 rebalance_gate 가 실제 거래일로 판단한다.
+            "rebalance_dday": schedule.days_until_check(_date.today()),
+            "rebalance_date": schedule.next_check_day(_date.today()).isoformat(),
+            "rebalance_notice": schedule.countdown_line(_date.today()),
             "updated": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
             "usdkrw": round(usdkrw, 2), "cash_usd": round(cash, 2),
             "cash_krw": round(cash * usdkrw), "positions": rows,
