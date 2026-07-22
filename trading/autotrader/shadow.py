@@ -61,7 +61,10 @@ def resolve_names(codes, lookup=None) -> dict:
 
 # 전략 상수 — pipeline 과 동기화 대상 (tests/test_shadow.py 가 drift 를 잡는다).
 INITIAL_CAPITAL_KRW = 10_000_000
-MAX_NEW_PER_DAY = 2            # C2 일별 신규 진입 상한
+# 섀도 계좌의 일별 신규 진입 상한. **실계좌(pipeline.MAX_NEW_PER_DAY=2)와 일부러 다르다.**
+# 가짜 돈이라 더 담아서 관찰하려고 사용자가 5로 정했다(2026-07-22).
+# 이 값이 실계좌 주문 경로로 새면 안 된다 — shadow.py 는 주문을 내지 않으므로 구조적으로 불가.
+MAX_NEW_PER_DAY = 5
 STOP_VOL_K = 2.5              # C2 손절 거리 하한 배수
 COOLDOWN_BARS = 10           # C2 손절 후 재진입 금지 거래일
 

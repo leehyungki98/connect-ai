@@ -8000,7 +8000,7 @@ function _swingShadowCardHtml(): string {
     const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
     const sg = (n: number) => n > 0 ? '+' : '';
     const root = _resolveTradingRoot();
-    let openRows = '', closedRows = '', realized = 0, openN = 0, closedN = 0, liveHdr = '';
+    let openRows = '', closedRows = '', pendRows = '', realized = 0, openN = 0, closedN = 0, pendN = 0, liveHdr = '';
     try {
         // 실시간 평가 (watch_shadow_live 가 쓴 것) 우선, 없으면 진입 데이터만
         let view: any = null;
@@ -8056,15 +8056,26 @@ function _swingShadowCardHtml(): string {
                 : `${esc(view.updated)} 갱신`;
             liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${stamp}`;
         }
+        /* 대기 주문 — 지정가를 냈지만 아직 체결 판정 전. 이걸 안 보여주면
+           아침에 5건을 골라도 마감 판정(15:45) 전까지 카드가 텅 빈 것처럼 보인다. */
+        for (const o of (state.pending || [])) {
+            pendN++;
+            pendRows += `<div style="padding:6px 0;border-bottom:1px solid rgba(128,128,128,.08);font-size:12px;opacity:.75">
+              <div style="display:flex;justify-content:space-between">
+                <span>${esc(o.name || o.symbol)}${o.rank ? `<span style="opacity:.4;font-size:11px"> ${esc(o.rank)}등</span>` : ''}</span>
+                <span style="opacity:.8">${Number(o.qty).toLocaleString()}주 · 지정가 ${Number(o.limit_price).toLocaleString()}원</span></div></div>`;
+        }
     } catch { /* 표시 전용 */ }
+    const pendBlock = pendRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 저가가 지정가에 닿아야 체결 (마감 후 판정)</div>${pendRows}</div>` : '';
     const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
     const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
     return `<section class="card span-7" id="swingShadowCard">
     <div class="card-head"><div class="card-title"><span class="title-icon">🌓</span> 스윙팀 섀도 포트폴리오 (페이퍼)</div>
-    <span class="badge">보유 ${openN}</span></div>
+    <span class="badge">보유 ${openN}${pendN ? ` · 대기 ${pendN}` : ''}</span></div>
     <div style="font-size:11px;opacity:.6;margin-bottom:6px">주문 0 · 판정자 통과분을 실매매처럼 추적 · 실현손익 <span style="color:${col(realized)}">${sg(realized)}₩${Number(realized).toLocaleString()}</span> (청산 ${closedN}건)</div>
     ${liveHdr ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px">${liveHdr}</div>` : ''}
     <div>${openBlock}</div>
+    ${pendBlock}
     ${closedBlock}
   </section>`;
 }

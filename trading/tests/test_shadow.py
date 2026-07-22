@@ -27,9 +27,12 @@ def _bar(date, o, h, l, vol=10_000_000):
 
 
 def test_constants_match_pipeline():
-    """drift 가드 — pipeline 의 C2 상수와 일치해야 한다."""
+    """drift 가드 — 손절 규칙은 실계좌와 일치해야 한다.
+
+    일별 상한만 일부러 다르다(가짜 돈이라 더 담아 관찰). 나머지가 벌어지면
+    섀도 성적을 실계좌 근거로 못 쓴다 — 다른 규칙으로 낸 성적이기 때문이다.
+    """
     from autotrader import pipeline
-    assert shadow.MAX_NEW_PER_DAY == pipeline.MAX_NEW_PER_DAY
     assert shadow.STOP_VOL_K == pipeline.STOP_VOL_K
     from autotrader.backtest import MAX_STOP_DIST, MIN_STOP_DIST
     assert shadow.MIN_STOP_DIST if False else True  # 값은 backtest 에서 직접 재사용
@@ -76,9 +79,10 @@ def test_limit_unfilled_when_low_above():
 
 def test_max_new_per_day_cap():
     s = shadow._fresh_state()
-    entries = [_entry(f"00000{i}", 10000, 9500, 11000) for i in range(4)]
+    entries = [_entry(f"00000{i}", 10000, 9500, 11000)
+               for i in range(shadow.MAX_NEW_PER_DAY + 2)]
     shadow.record_entries("2026-07-20", entries, {}, state=s)
-    assert len(s["pending"]) == shadow.MAX_NEW_PER_DAY     # 최대 2건 주문
+    assert len(s["pending"]) == shadow.MAX_NEW_PER_DAY     # 섀도 상한만큼 주문
 
 
 def test_already_pending_or_held_skipped():
@@ -338,3 +342,17 @@ def test_wide_log_records_zero_reason(tmp_path):
     rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
     assert rows[0]["error"] is None and rows[0]["got"] == 8   # 더할 게 없어서 0
     assert rows[1]["error"].startswith("RuntimeError")        # 터져서 0
+
+
+def test_shadow_cap_is_deliberately_looser_than_real():
+    """섀도 상한이 실계좌보다 느슨한 건 의도다 — 다만 '실계좌를 넘어선다'가 계약이다.
+
+    이 테스트가 없으면 나중에 누가 실계좌 상한을 6으로 올려도(섀도 5) 아무도 모르고,
+    섀도가 실계좌보다 덜 사는 이상한 상태가 조용히 만들어진다.
+    """
+    from autotrader import pipeline
+    assert shadow.MAX_NEW_PER_DAY >= pipeline.MAX_NEW_PER_DAY
+    # 섀도는 주문 함수를 아예 안 갖는다 — 상한이 느슨해도 실주문이 늘 수 없는 근거
+    import inspect
+    src = inspect.getsource(shadow)
+    assert "place_order" not in src and "OrderIntent" not in src

@@ -4,3 +4,6 @@
 {"event": "entry", "date": "2026-07-21", "symbol": "086790", "name": "하나금융지주", "qty": 11, "entry_price": 131266, "limit_price": 133400, "stop": 124286, "target": 145000, "horizon_days": 15, "breadth": 0.135}
 {"event": "order", "date": "2026-07-22", "symbol": "021240", "name": "코웨이", "qty": 16, "limit_price": 93500, "stop": 85646, "target": 103500, "horizon_days": 15, "breadth": 0.16}
 {"event": "order", "date": "2026-07-22", "symbol": "105560", "name": "KB금융", "qty": 8, "limit_price": 174000, "stop": 160971, "target": 190000, "horizon_days": 12, "breadth": 0.16}
+{"event": "order", "date": "2026-07-22", "symbol": "005830", "name": "DB손해보험", "qty": 9, "limit_price": 161700, "stop": 150816, "target": 175500, "horizon_days": 10, "breadth": 0.16}
+{"event": "order", "date": "2026-07-22", "symbol": "055550", "name": "신한지주", "qty": 14, "limit_price": 104700, "stop": 97085, "target": 114000, "horizon_days": 15, "breadth": 0.16}
+{"event": "order", "date": "2026-07-22", "symbol": "138040", "name": "메리츠금융지주", "qty": 11, "limit_price": 113000, "stop": 106746, "target": 122000, "horizon_days": 10, "breadth": 0.16}
