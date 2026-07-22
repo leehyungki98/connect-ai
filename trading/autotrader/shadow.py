@@ -29,6 +29,7 @@ TRADES_FILE = LEDGER_DIR / "shadow_trades.jsonl"            # 계좌: 진입·�
 SAMPLES_FILE = LEDGER_DIR / "shadow_samples.jsonl"          # 샘플: 제약 없이 전부
 BREADTH_FILE = LEDGER_DIR / "breadth_log.jsonl"             # 폭 일지 (매일 한 줄)
 RANKING_FILE = LEDGER_DIR / "ranking_log.jsonl"             # 그날 상위 랭킹 전체
+WIDE_FILE = LEDGER_DIR / "wide_log.jsonl"                   # 확장 선정 결과 (0건 사유)
 
 
 def resolve_names(codes, lookup=None) -> dict:
@@ -141,6 +142,29 @@ def log_ranking(date: str, rows: list, breadth: float = None,
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         for r in keep:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def log_wide(date: str, info: dict, path: Path = None) -> None:
+    """확장 선정 결과를 매일 한 줄 — 0건의 이유를 구분하려고.
+
+    확장이 0건인 이유는 둘이다: 선정자가 이미 다 뽑아서 더할 게 없거나, 호출이 터졌거나.
+    이걸 안 남기면 몇 주 뒤 '확장 표본이 왜 없지'를 되짚을 방법이 없다.
+    같은 날 재실행은 마지막 값으로 교체.
+    """
+    p = path or WIDE_FILE
+    rows = []
+    if p.exists():
+        try:
+            rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()
+                    if x.strip() and json.loads(x).get("date") != date]
+        except (OSError, ValueError):
+            rows = []
+    rows.append({"date": date, **info})
+    rows.sort(key=lambda r: r["date"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 

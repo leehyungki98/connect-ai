@@ -2,3 +2,5 @@
 {"event": "order", "date": "2026-07-21", "symbol": "086790", "name": "하나금융지주", "qty": 11, "limit_price": 133400, "stop": 124286, "target": 145000, "horizon_days": 15, "breadth": 0.135}
 {"event": "entry", "date": "2026-07-21", "symbol": "161390", "name": "한국타이어앤테크놀로지", "qty": 21, "entry_price": 69135, "limit_price": 70100, "stop": 63652, "target": 78000, "horizon_days": 20, "breadth": 0.135}
 {"event": "entry", "date": "2026-07-21", "symbol": "086790", "name": "하나금융지주", "qty": 11, "entry_price": 131266, "limit_price": 133400, "stop": 124286, "target": 145000, "horizon_days": 15, "breadth": 0.135}
+{"event": "order", "date": "2026-07-22", "symbol": "021240", "name": "코웨이", "qty": 16, "limit_price": 93500, "stop": 85646, "target": 103500, "horizon_days": 15, "breadth": 0.16}
+{"event": "order", "date": "2026-07-22", "symbol": "105560", "name": "KB금융", "qty": 8, "limit_price": 174000, "stop": 160971, "target": 190000, "horizon_days": 12, "breadth": 0.16}

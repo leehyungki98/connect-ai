@@ -14,6 +14,7 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(shadow, "SAMPLES_FILE", tmp_path / "shadow_samples.jsonl")
     monkeypatch.setattr(shadow, "BREADTH_FILE", tmp_path / "breadth_log.jsonl")
     monkeypatch.setattr(shadow, "RANKING_FILE", tmp_path / "ranking_log.jsonl")
+    monkeypatch.setattr(shadow, "WIDE_FILE", tmp_path / "wide_log.jsonl")
 
 
 def _entry(sym, entry, stop, target, horizon=10):
@@ -288,3 +289,52 @@ def test_ranking_log_keeps_all_and_is_idempotent(tmp_path):
     assert len(rec["rows"]) == 2 and rec["breadth"] == 0.42
     # 안 뽑힌 종목도 남아야 한다 — 버리면 사후 재구성이 안 된다
     assert any(not r["proposed"] for r in rec["rows"])
+
+
+def test_wide_actually_adds_only_new_symbols():
+    """확장이 실제로 동작하는지 — 가짜 선정자/판정자로 오프라인 검증.
+
+    소스 검사 테스트만으로는 '연결이 안 새는지'만 알지 '돌긴 하는지'는 모른다.
+    """
+    import json
+
+    from autotrader.pipeline import _shadow_wide_entries
+    from autotrader.gates.types import Portfolio
+    from autotrader.screener.ranking import RankedSymbol
+    from autotrader.brain.client import Candidate
+
+    syms = ["005930", "000660", "035420", "051910", "005380"]
+    cands = [Candidate(RankedSymbol(s, 1.0, 0.1, 0.2, 0.02), 70000) for s in syms]
+    pf = Portfolio(10_000_000, 10_000_000, {})
+
+    def fake_proposer(_brain, prompt):
+        assert "최소 5개" in prompt          # 확장 요구가 실제로 전달된다
+        return json.dumps({"decisions": [
+            {"symbol": s, "action": "enter", "entry_price": 70000,
+             "stop_price": 66000, "target_price": 78000, "horizon_days": 10,
+             "reason": "테스트"} for s in syms], "exits": []})
+
+    def fake_judge(_brain, _prompt):
+        return json.dumps({"verdicts": [
+            {"symbol": s, "verdict": "pass", "criterion": None, "reason": "ok"}
+            for s in syms]})
+
+    rank_of = {s: i + 1 for i, s in enumerate(syms)}
+    already = {"005930", "000660"}          # 실계좌 선정이 이미 가져간 2개
+    out = _shadow_wide_entries(cands, pf, "codex", "claude",
+                               fake_proposer, fake_judge, rank_of, already)
+    got = {d["symbol"] for d in out}
+    assert got == {"035420", "051910", "005380"}   # 중복 제외한 나머지만
+    assert all(d["rank"] == rank_of[d["symbol"]] for d in out)
+
+
+def test_wide_log_records_zero_reason(tmp_path):
+    """확장 0건의 사유를 구분할 수 있어야 한다 (중복이라 0 vs 터져서 0)."""
+    p = tmp_path / "wide.jsonl"
+    shadow.log_wide("2026-07-22", {"asked": 5, "got": 8, "new": 0, "error": None}, path=p)
+    shadow.log_wide("2026-07-23", {"asked": 5, "got": 2, "new": 0,
+                                   "error": "RuntimeError: CLI timeout"}, path=p)
+    import json
+    rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert rows[0]["error"] is None and rows[0]["got"] == 8   # 더할 게 없어서 0
+    assert rows[1]["error"].startswith("RuntimeError")        # 터져서 0

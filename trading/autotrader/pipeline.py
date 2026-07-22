@@ -303,16 +303,23 @@ def run_premarket(
             #    선정자가 스스로 고르면 하루 2개쯤이라 표본이 너무 느리게 쌓인다.
             #    "3~5등까지 샀으면 어땠나"를 재려면 그 제안 자체가 있어야 한다.
             #    실패해도 위 ①~③ 은 이미 기록됐다 (별도 try).
+            #    확장 결과가 0건일 수 있는 이유가 둘이다 — 선정자가 이미 다 뽑아서
+            #    새로 추가할 게 없거나, 호출이 터졌거나. 그냥 삼키면 이 둘을 구분할 수
+            #    없어 '확장이 도는 중'이라고 착각하게 된다. 매일 결과를 남긴다.
             if SHADOW_WIDE_N > 0:
+                _w = {"asked": SHADOW_WIDE_N, "got": 0, "new": 0, "error": None}
                 try:
                     _wide = _shadow_wide_entries(
                         candidates, pf, proposer_brain, judge_brain,
                         proposer_runner, judge_runner, _rank_of, _proposed)
+                    _w["got"] = len(ts.entries)      # 실계좌 선정이 이미 뽑은 수
+                    _w["new"] = len(_wide)           # 그 위에 확장이 더한 수
                     if _wide:
                         shadow.record_samples(_today, _wide, _vol20, breadth=breadth,
                                               names=_rank_names, origin="확장")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _e:  # noqa: BLE001
+                    _w["error"] = f"{type(_e).__name__}: {_e}"[:200]
+                shadow.log_wide(_today, _w)
     except Exception:  # noqa: BLE001 — 표시/기록 실패는 절대 실매매를 막지 않는다
         pass
 
