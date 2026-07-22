@@ -1168,6 +1168,11 @@ window.addEventListener('message', e => {
     const el = document.getElementById('swingShadowCard');
     if (el && m.html) { const tmp = document.createElement('div'); tmp.innerHTML = m.html; if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild); }
   }
+  else if (m.type === 'usLongtermHtml') {
+    /* 미장팀 카드도 같은 방식 — 15분마다 이 카드만 교체. */
+    const el = document.getElementById('usLongtermPositionsCard');
+    if (el && m.html) { const tmp = document.createElement('div'); tmp.innerHTML = m.html; if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild); }
+  }
   else if (m.type === 'toast') toast(m.text, m.err);
   else if (m.type === 'skillRunOutput') {
     /* v2.89.12 — 스킬 단독 실행 결과 라이브 표시 */

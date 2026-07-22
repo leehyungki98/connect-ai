@@ -8306,7 +8306,7 @@ function _usLongtermPositionsCardHtml(): string {
                   <span>₩${Number(v.cash_krw).toLocaleString()} <span style="opacity:.6">($${Number(v.cash_usd).toFixed(2)})</span></span></div>`;
             }
             const t = v.total || {};
-            header = `평가 ₩${Number(t.value_krw).toLocaleString()} · <span style="color:${col(t.pnl_usd)}">평가손익 ${sign(t.pnl_usd)}$${Number(t.pnl_usd).toFixed(2)} (${sign(t.ret_pct)}${Number(t.ret_pct).toFixed(2)}%)</span><br><span style="opacity:.6">${esc(v.asof)} 종가 기준 · 환율 ${Number(v.usdkrw).toLocaleString()} · 실시간 아님(일봉)</span>`;
+            header = `평가 ₩${Number(t.value_krw).toLocaleString()} · <span style="color:${col(t.pnl_usd)}">평가손익 ${sign(t.pnl_usd)}$${Number(t.pnl_usd).toFixed(2)} (${sign(t.ret_pct)}${Number(t.ret_pct).toFixed(2)}%)</span><br><span style="opacity:.6">${v.session === '장중' ? `${esc(v.updated || v.asof)} 장중` : `${esc(v.asof)} 종가`} 기준 · 환율 ${Number(v.usdkrw).toLocaleString()}${v.session === '장중' ? '' : ' · 미국장 마감 중'}</span>`;
         } else {
             // 폴백: positions_view 없으면 수량만 (run_daily 미실행)
             const hp = _usLongtermStatePath('holdings.json');
@@ -11963,6 +11963,18 @@ class CompanyDashboardPanel {
         } else {
             post();   // 장 마감 중엔 시세 갱신 없이 카드만 재전송 (보유·청산 변화 반영)
         }
+        this._refreshUsLongtermCard();
+    }
+
+    /** 미장팀 카드 갱신 — 표시 전용 스크립트만 돌린다 (nav_log·ledger 무접촉).
+     *  미국장은 한국시간 밤이라 낮에는 최신 종가를, 밤에는 준실시간을 보여준다. */
+    private _refreshUsLongtermCard(): void {
+        const root = _resolveUsLongtermRoot();
+        if (!root) { return; }
+        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_view_refresh.py')} --live`,
+            root, () => {}, 90000, 'both', { PYTHONIOENCODING: 'utf-8' })
+            .then(() => { try { this._panel.webview.postMessage({ type: 'usLongtermHtml', html: _usLongtermPositionsCardHtml() }); } catch { /* ignore */ } })
+            .catch(() => { /* 표시 전용 — 실패해도 조용히 */ });
     }
 
     private _postToast(text: string, err = false) {
