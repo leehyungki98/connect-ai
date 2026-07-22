@@ -8057,16 +8057,31 @@ function _swingShadowCardHtml(): string {
             liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${stamp}`;
         }
         /* 대기 주문 — 지정가를 냈지만 아직 체결 판정 전. 이걸 안 보여주면
-           아침에 5건을 골라도 마감 판정(15:45) 전까지 카드가 텅 빈 것처럼 보인다. */
-        for (const o of (state.pending || [])) {
+           아침에 5건을 골라도 마감 판정(15:45) 전까지 카드가 텅 빈 것처럼 보인다.
+           지정가만 보여주면 체결까지 얼마나 남았는지 알 수 없어 현재가·거리도 같이.
+           체결 규칙이 '그날 저가 ≤ 지정가' 라, 봐야 할 값은 현재가가 지정가보다
+           얼마나 위에 있느냐다. */
+        const pendList = (view?.pending && view.pending.length) ? view.pending : (state.pending || []);
+        for (const o of pendList) {
             pendN++;
-            pendRows += `<div style="padding:6px 0;border-bottom:1px solid rgba(128,128,128,.08);font-size:12px;opacity:.75">
-              <div style="display:flex;justify-content:space-between">
-                <span>${esc(o.name || o.symbol)}${o.rank ? `<span style="opacity:.4;font-size:11px"> ${esc(o.rank)}등</span>` : ''}</span>
-                <span style="opacity:.8">${Number(o.qty).toLocaleString()}주 · 지정가 ${Number(o.limit_price).toLocaleString()}원</span></div></div>`;
+            const cur = (typeof o.price === 'number') ? o.price : null;
+            const gap = (typeof o.gap_pct === 'number') ? o.gap_pct : null;
+            const reach = gap !== null && gap <= 0;
+            const tag = cur === null
+                ? '<span style="opacity:.45">시세 대기</span>'
+                : reach
+                    ? '<span style="color:#22c55e;font-weight:600">체결권 도달</span>'
+                    : `<span style="opacity:.7">${gap!.toFixed(2)}% 더 내려와야</span>`;
+            pendRows += `<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.08);font-size:12px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-weight:600;opacity:.85">${esc(o.name || o.symbol)}${o.rank ? `<span style="opacity:.4;font-weight:400;font-size:11px"> ${esc(o.rank)}등</span>` : ''}</span>
+                ${tag}</div>
+              <div style="display:flex;justify-content:space-between;opacity:.6;margin-top:2px;font-size:11px">
+                <span>${Number(o.qty).toLocaleString()}주 · 지정가 ${Number(o.limit_price).toLocaleString()}원</span>
+                ${cur !== null ? `<span>현재 <b>${Number(cur).toLocaleString()}원</b></span>` : ''}</div></div>`;
         }
     } catch { /* 표시 전용 */ }
-    const pendBlock = pendRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 저가가 지정가에 닿아야 체결 (마감 후 판정)</div>${pendRows}</div>` : '';
+    const pendBlock = pendRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 그날 저가가 지정가에 닿아야 체결 (판정은 마감 후)</div>${pendRows}</div>` : '';
     const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
     const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
     return `<section class="card span-7" id="swingShadowCard">

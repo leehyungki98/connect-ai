@@ -63,8 +63,24 @@ def _build_view(state: dict, prices: dict, session: str = "장중") -> dict:
         tot_val += val
         tot_cost += cost
     rows.sort(key=lambda r: -r["value_krw"])
+
+    # 대기 주문 — 현재가가 없으면 체결까지 얼마나 남았는지 알 방도가 없다.
+    # 체결 규칙은 '그날 저가 ≤ 지정가' 라, 봐야 할 값은 현재가가 지정가보다
+    # 얼마나 위에 있느냐다 (gap_pct > 0 이면 그만큼 더 내려와야 한다).
+    pend = []
+    for o in state.get("pending", []):
+        sym = o["symbol"]
+        price = prices.get(sym)
+        gap = round((price / o["limit_price"] - 1) * 100, 2) if price else None
+        pend.append({
+            "symbol": sym, "name": o.get("name", sym), "qty": o["qty"],
+            "limit_price": o["limit_price"], "price": price, "gap_pct": gap,
+            "rank": o.get("rank"), "order_date": o.get("order_date"),
+        })
+    pend.sort(key=lambda r: (r["gap_pct"] is None, r["gap_pct"] or 0))
+
     cash = state.get("cash_krw", 0)
-    return {"positions": rows, "cash_krw": cash,
+    return {"positions": rows, "pending": pend, "cash_krw": cash,
             "total_value_krw": tot_val + cash, "total_pnl_krw": tot_val - tot_cost,
             "total_ret_pct": round((tot_val - tot_cost) / tot_cost * 100, 2) if tot_cost else 0.0,
             "session": session,

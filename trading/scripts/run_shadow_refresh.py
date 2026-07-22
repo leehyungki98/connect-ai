@@ -44,7 +44,9 @@ def main() -> int:
     # --close: 장 마감 후 1회. 값은 15:30 종가라 '장중'이 아니라 '종가'로 표시한다.
     session = "종가" if "--close" in sys.argv else "장중"
     state = shadow.load_state()
-    syms = list(state.get("positions", {}))
+    # 대기 주문도 시세를 받는다 — 지정가만 보이면 체결까지 얼마 남았는지 알 수 없다.
+    syms = list(dict.fromkeys(list(state.get("positions", {}))
+                              + [o["symbol"] for o in state.get("pending", [])]))
     prices = {}
     if syms and session == "종가":
         try:
@@ -58,8 +60,12 @@ def main() -> int:
     view = _build_view(state, prices, session=session)
     VIEW_JSON.parent.mkdir(parents=True, exist_ok=True)
     VIEW_JSON.write_text(json.dumps(view, ensure_ascii=False), encoding="utf-8")
-    print(f"섀도 평가 갱신({session}) — 보유 {len(syms)}종목 · "
+    print(f"섀도 평가 갱신({session}) — 보유 {len(view['positions'])}종목 · "
+          f"대기 {len(view['pending'])}건 · "
           f"₩{view['total_value_krw']:,} ({view['total_ret_pct']:+.2f}%)")
+    for p in view["pending"]:
+        if p["gap_pct"] is not None and p["gap_pct"] <= 0:
+            print(f"  체결권 {p['name']} — 현재 {p['price']:,} ≤ 지정가 {p['limit_price']:,}")
     return 0
 
 
