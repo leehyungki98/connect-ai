@@ -159,6 +159,38 @@ def match_relevance(title: str, summary: str) -> list:
     return sorted(matched)
 
 
+def feed_tickers() -> list:
+    """뉴스 소스로 직접 조회할 티커 — 보유 + 관심(관찰/기각). config 가 단일 출처.
+
+    이건 '뉴스를 티커별로 깊게 파올 대상'이다. 후보군·테마주 전체(수십 개)를
+    티커별로 긁으면 호출이 폭증하므로, 그쪽은 테마 키워드 검색(theme_queries)이 덮는다.
+    벤치마크 ETF(SPY/VOO)는 개별주 뉴스 대상이 아니라 제외.
+    """
+    try:
+        from .config import BUCKETS, SNAPSHOT_WATCHLIST
+    except Exception:
+        return []
+    out = []
+    for cfg in BUCKETS.values():
+        out += list(cfg.get("sleeves", {}).get("GROWTH", {}))
+    out += [t for t in SNAPSHOT_WATCHLIST if t not in ("SPY", "VOO")]
+    # 순서 유지 중복 제거
+    return list(dict.fromkeys(out))
+
+
+def theme_queries() -> dict:
+    """테마별 뉴스 검색어 — {테마: 질의문}. 키워드로 '판 자체'를 잡아 새 대장주도 놓치지 않는다.
+
+    각 테마의 대표 키워드 몇 개를 OR 로 묶고 'stock' 을 붙여 투자 맥락으로 좁힌다.
+    (match_relevance 가 어차피 한 번 더 거르므로 질의는 넓게 잡아도 안전하다.)
+    """
+    out = {}
+    for theme, spec in THEMES.items():
+        kws = spec["keywords"][:3]
+        out[theme] = " OR ".join(f'"{k}"' for k in kws) + " stock"
+    return out
+
+
 def classify_tier(ticker: str) -> str:
     """티커의 계층 — held / watchlist / candidate. config 가 단일 출처.
     config import 는 함수 안에서(순수 로직 모듈이 config 에 상시 의존하지 않게)."""
