@@ -65,6 +65,12 @@ INITIAL_CAPITAL_KRW = 10_000_000
 # 가짜 돈이라 더 담아서 관찰하려고 사용자가 5로 정했다(2026-07-22).
 # 이 값이 실계좌 주문 경로로 새면 안 된다 — shadow.py 는 주문을 내지 않으므로 구조적으로 불가.
 MAX_NEW_PER_DAY = 5
+# 계좌 순위 상한 — 그날 모멘텀 상위 N등까지만 산다 (2026-07-24 사용자 결정: 3).
+# 배경: 레오가 매일 9~10개를 다 골라 사실상 상위 10개를 통째로 사고 있었다.
+# ⚠ **계좌(record_entries)에만 건다. 샘플(record_samples)엔 절대 걸지 않는다.**
+#    샘플까지 막으면 "4~9등이 더 나았나"를 확인할 대조군이 사라져, 이 3등 컷이
+#    맞았는지 영영 검증할 수 없다. 샘플은 전 순위를 계속 기록한다.
+MAX_RANK = 3
 STOP_VOL_K = 2.5              # C2 손절 거리 하한 배수
 COOLDOWN_BARS = 10           # C2 손절 후 재진입 금지 거래일
 
@@ -257,6 +263,10 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
             continue                                    # 손절 쿨다운 중
         if new_today >= MAX_NEW_PER_DAY:
             break                                       # 일 신규 상한
+        # 순위 상한 — 계좌는 상위권만 산다. 순위가 없으면(구 데이터) 막지 않는다.
+        rk = d.get("rank")
+        if MAX_RANK and rk is not None and rk > MAX_RANK:
+            continue
         entry = round_down_to_tick(int(d["entry_price"]))
         stop = adjusted_stop(entry, int(d["stop_price"]),
                              float(vol20_by_symbol.get(sym, 0.0)))
@@ -266,14 +276,16 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
         # 실전과 동일: 지정가 '주문 예약'일 뿐 아직 체결 아니다. 장중 저가가 지정가에
         # 닿아야 체결(settle_pending). 무조건 체결로 치면 낙관 편향이 생긴다.
         name = (names or {}).get(sym, sym)
+        # rank 를 주문에 실어둔다 — 체결 후 포지션까지 따라가야 나중에 순위대별
+        # 성적을 가를 수 있다. 진입 시점 순위는 사후 재구성이 안 된다(매일 바뀐다).
         order = {"symbol": sym, "name": name, "qty": qty, "limit_price": entry,
                  "stop": stop, "target": int(d["target_price"]),
-                 "horizon_days": int(d["horizon_days"]),
+                 "horizon_days": int(d["horizon_days"]), "rank": rk,
                  "order_date": date, "breadth": breadth}
         s.setdefault("pending", []).append(order)
         rec = {"event": "order", "date": date, "symbol": sym, "name": name,
                "qty": qty, "limit_price": entry, "stop": stop,
-               "target": int(d["target_price"]),
+               "target": int(d["target_price"]), "rank": rk,
                "horizon_days": int(d["horizon_days"]), "breadth": breadth}
         events.append(rec)
         _append_trade(rec)
@@ -313,12 +325,12 @@ def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
             "name": o.get("name", sym), "qty": fill.qty, "entry_price": fill.price,
             "stop": o["stop"], "target": o["target"],
             "horizon_days": o["horizon_days"], "entry_date": od,
-            "breadth": o.get("breadth"),
+            "breadth": o.get("breadth"), "rank": o.get("rank"),
         }
         rec = {"event": "entry", "date": od, "symbol": sym,
                "name": o.get("name", sym), "qty": fill.qty,
                "entry_price": fill.price, "limit_price": o["limit_price"],
-               "stop": o["stop"], "target": o["target"],
+               "stop": o["stop"], "target": o["target"], "rank": o.get("rank"),
                "horizon_days": o["horizon_days"], "breadth": o.get("breadth")}
         events.append(rec)
         _append_trade(rec)

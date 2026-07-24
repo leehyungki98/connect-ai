@@ -356,3 +356,46 @@ def test_shadow_cap_is_deliberately_looser_than_real():
     import inspect
     src = inspect.getsource(shadow)
     assert "place_order" not in src and "OrderIntent" not in src
+
+
+# ── 순위 상한 (계좌만) ────────────────────────────────────────────────
+
+def _ranked(sym, rank, entry=10000):
+    e = _entry(sym, entry, entry - 500, entry + 1500)
+    e["rank"] = rank
+    return e
+
+
+def test_account_buys_only_top_ranks():
+    """계좌는 MAX_RANK 등까지만 산다."""
+    s = shadow._fresh_state()
+    entries = [_ranked(f"00000{i}", i) for i in range(1, 7)]   # 1~6등
+    shadow.record_entries("2026-07-24", entries, {}, state=s)
+    ranks = sorted(o["rank"] for o in s["pending"])
+    assert ranks and max(ranks) <= shadow.MAX_RANK
+
+
+def test_samples_ignore_rank_cap():
+    """샘플은 순위 상한을 무시하고 전부 기록 — 4~9등 대조군이 있어야
+    '3등 컷이 옳았나'를 나중에 검증할 수 있다."""
+    entries = [_ranked(f"00000{i}", i) for i in range(1, 7)]
+    out = shadow.record_samples("2026-07-24", entries, {})
+    assert {r["rank"] for r in out} == {1, 2, 3, 4, 5, 6}
+
+
+def test_missing_rank_not_blocked():
+    """순위 없는 구 데이터는 막지 않는다 (rank=None → 통과)."""
+    s = shadow._fresh_state()
+    shadow.record_entries("2026-07-24", [_entry("005930", 70000, 66000, 78000)],
+                          {"005930": 0.03}, state=s)
+    assert len(s["pending"]) == 1
+
+
+def test_rank_survives_to_position():
+    """진입 시점 순위가 포지션까지 따라가야 한다 — 매일 바뀌어서 사후 재구성 불가."""
+    s = shadow._fresh_state()
+    shadow.record_entries("2026-07-24", [_ranked("005930", 2, 70000)],
+                          {"005930": 0.0}, state=s)
+    assert s["pending"][0]["rank"] == 2
+    _fill(s, "005930", "2026-07-24", 70000, 70500, 69000)
+    assert s["positions"]["005930"]["rank"] == 2

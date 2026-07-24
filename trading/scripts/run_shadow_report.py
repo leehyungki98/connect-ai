@@ -58,8 +58,10 @@ def _rank_origin_table(rows: list) -> None:
     has = [r for r in rows if r.get("rank") or r.get("origin")]
     if not has:
         return
+    # 버킷 경계를 계좌 컷(MAX_RANK=3)에 맞춘다 — "3등까지"가 옳았는지 보려면
+    # 1~3 과 4~5·6+ 가 갈려야 한다. 경계가 어긋나면 그 질문에 답이 안 나온다.
     print(f"\n{'구분':>10} {'건수':>5} {'평균':>8} {'중앙값':>8} {'승률':>6}")
-    for lo, hi, lab in ((1, 2, "1~2등"), (3, 5, "3~5등"), (6, 99, "6등+")):
+    for lo, hi, lab in ((1, 3, "1~3등"), (4, 5, "4~5등"), (6, 99, "6등+")):
         b = [r for r in has if r.get("rank") and lo <= r["rank"] <= hi]
         if b:
             _line(lab, b)
