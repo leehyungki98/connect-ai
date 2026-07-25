@@ -1,2 +1,4 @@
 {"date": "2026-07-24", "source": "ticker:NVDA", "event": "Is IREN (IREN) Undervalued Following Its $2.8b AI Cloud Contract Win?", "impact": 1, "thesis_axis": "성장", "basis": "마이크로소프트가 IREN과 다년 AI 클라우드 계약 고객으로 포함돼 자체 용량을 넘는 AI 수요가 확인된다"}
 {"date": "2026-07-24", "source": "ticker:META", "event": "Google, Amazon, Meta, & Microsoft will spend 'unprecedented' $1T on AI capex in 2027: Analyst", "impact": -1, "thesis_axis": "수익성", "basis": "AI 자본지출 확대 대열에 포함돼 감가상각 증가에 따른 이익률 압박이 예상된다."}
+{"date": "2026-07-25", "source": "ticker:NVDA", "event": "2 reasons why Microsoft belongs in your portfolio: D.A. Davidson's Gil Luria", "impact": 1, "thesis_axis": "성장", "basis": "다년간 OpenAI 기술 접근과 오픈소스 활용으로 AI 경쟁력 확보 주장."}
+{"date": "2026-07-25", "source": "ticker:META", "event": "2 reasons why Microsoft belongs in your portfolio: D.A. Davidson's Gil Luria", "impact": 1, "thesis_axis": "경쟁", "basis": "OpenAI 기술 다년 접근권과 오픈소스 부상으로 자체 프런티어 모델 불필요 — AI 경쟁우위 논거"}

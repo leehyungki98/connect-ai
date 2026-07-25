@@ -6,3 +6,5 @@
 {"date": "2026-07-24", "source": "ticker:META", "event": "Two Blowout Quarters, Two Selloffs: What Tesla and Alphabet Reveal About our Price Target", "impact": 0, "thesis_axis": "밸류", "basis": "분기 호조가 언급되나 구체 수치가 없어 편입 기준 재판정 근거로는 부족하다."}
 {"date": "2026-07-24", "source": "ticker:META", "event": "Magnificent 7 Loses $767 Billion as AI Skeptics Dump Tech Stocks", "impact": 0, "thesis_axis": "밸류", "basis": "매그니피센트7 전반의 단일 거래일 하락에 포함된 것으로, 논지 변화 근거는 없다."}
 {"date": "2026-07-24", "source": "ticker:META", "event": "Did Google and Tesla just break AI trade’s bull case?", "impact": -1, "thesis_axis": "수익성", "basis": "같은 분기에 11억 달러의 잉여현금흐름 적자를 냈다."}
+{"date": "2026-07-25", "source": "ticker:TSLA", "event": "T-REX to Launch First-Ever U.S. 2X Inverse DRAM ETF (RAMZ) on July 28", "impact": 0, "thesis_axis": "밸류", "basis": "DRAM 인버스 ETF 출시 뉴스로 테슬라 논지와 무관."}
+{"date": "2026-07-25", "source": "ticker:TSLA", "event": "Nvidia, Tesla, SpaceX, Alphabet, Lockheed, AT&T, and More Stocks That Explain Today’s Market", "impact": 0, "thesis_axis": "밸류", "basis": "유가 상승·인플레 우려에 따른 주가 하락으로 장기 논지와 무관한 매크로."}
