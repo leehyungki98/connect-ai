@@ -2624,6 +2624,37 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
         /* us-longterm 루트를 못 찾으면 아래 일반 경로로 흘려보냄 */
     }
 
+    /* 스윙 전략 질문 → 윤가온이 현빈 사후분석·시장 폭·섀도를 엮어 쉬운 말로.
+       "스윙 전략 어때?" / "스윙 왜 안 사?" / "레오 뭐 골랐어?" 류. deskQ(단순 현황
+       요약)보다 먼저 — '전략/왜/어떻게'가 붙으면 단순 숫자보다 엮은 설명이 낫다. */
+    const swingStratQ = /(스윙|레오|현빈|선정|전략|폭|매수|왜.*안|종목)/;
+    const swingStratAsk = /(전략|왜|어떻게|어떤|이유|정리|짚어|설명|분석|골랐|고르|사는|안\s*사|안\s*사냐|돌아가)/;
+    if (swingStratQ.test(userText) && swingStratAsk.test(userText) && !intelQ.test(userText)) {
+        const swRoot = _resolveTradingRoot();
+        if (swRoot) {
+            await sendTelegramReport(`🧩 *윤가온*이 스윙팀 기록(현빈 분석·시장 폭·섀도)을 정리하는 중이에요…`);
+            sendTelegramTyping().catch(() => { /* ignore */ });
+            try {
+                const r = await runCommandCaptured(
+                    `${_pythonCmd()} ${JSON.stringify('scripts/run_swing_brief.py')}`,
+                    swRoot, () => { /* no stream */ }, 180000, 'stdout',
+                    { PYTHONIOENCODING: 'utf-8', SWING_BRIEF_Q: userText });
+                const body = (r.output || '').trim();
+                if (body && !r.timedOut) {
+                    await sendTelegramLong(body);
+                    _pushTelegramHistory('assistant', body.slice(0, 400));
+                    try { _activeChatProvider?.postSystemNote?.(`윤가온 → 텔레그램 (스윙 정리)`, '🧩'); } catch { /* ignore */ }
+                    return;
+                }
+                await sendTelegramReport(`🧩 윤가온: 지금 정리를 못 끝냈어요. 재료가 얕거나 시간이 초과됐을 수 있어요.`);
+                return;
+            } catch {
+                await sendTelegramReport(`🧩 윤가온 호출에 실패했어요. 잠시 후 다시 시도해주세요.`);
+                return;
+            }
+        }
+    }
+
     /* 매매 데스크 현황 — "스윙 어때?" / "미장 수익률?" / "매매 어떻게 돼?" 류.
        비서가 CEO 로 떠넘기면 답이 안 돌아오던 질문. 이제 현빈·노유진 보고서를
        직접 읽어 결정적으로 답한다 (로컬 모델 안 거침). */

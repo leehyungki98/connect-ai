@@ -112,7 +112,7 @@ export const AGENTS: Record<string, AgentDef> = {
     role: '정리 담당 · Synthesizer',
     emoji: '🧩',
     color: '#A78BFA',
-    specialty: '전문가가 던진 결론+근거를 사용자 질문에 맞게 엮어 쉬운 말로 정리. 여러 전문가·양 데스크를 걸친 질문에 하나로 답한다 (현재 미장 정세 파일럿)',
+    specialty: '전문가가 던진 결론+근거를 사용자 질문에 맞게 엮어 쉬운 말로 정리. 미장 정세(강해원)·스윙 전략(현빈·시장폭·섀도) 양쪽 온디맨드 답변. 없는 말은 지어내지 않음',
     tagline: '흩어진 근거를 하나로 엮습니다 — 없는 말은 지어내지 않습니다',
     mission: '🧩 정리 담당',
     desk: 'shared',
