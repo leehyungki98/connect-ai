@@ -8,3 +8,8 @@
 {"date": "2026-07-24", "source": "ticker:META", "event": "Did Google and Tesla just break AI trade’s bull case?", "impact": -1, "thesis_axis": "수익성", "basis": "같은 분기에 11억 달러의 잉여현금흐름 적자를 냈다."}
 {"date": "2026-07-25", "source": "ticker:TSLA", "event": "T-REX to Launch First-Ever U.S. 2X Inverse DRAM ETF (RAMZ) on July 28", "impact": 0, "thesis_axis": "밸류", "basis": "DRAM 인버스 ETF 출시 뉴스로 테슬라 논지와 무관."}
 {"date": "2026-07-25", "source": "ticker:TSLA", "event": "Nvidia, Tesla, SpaceX, Alphabet, Lockheed, AT&T, and More Stocks That Explain Today’s Market", "impact": 0, "thesis_axis": "밸류", "basis": "유가 상승·인플레 우려에 따른 주가 하락으로 장기 논지와 무관한 매크로."}
+{"date": "2026-07-27", "source": "ticker:NVDA", "event": "Elon Musk's SpaceX Flies 20 Starlink V3 Satellites Tonight. The Stock Sits 49% Below Its High.", "impact": 0, "thesis_axis": "성장", "basis": "SpaceX 발사는 별개 비상장사 사안이고 주가가 고점 대비 49% 낮다는 단순 등락 언급뿐"}
+{"date": "2026-07-27", "source": "ticker:NVDA", "event": "Why Tesla, Google, and other Mag 7 stocks are losing billions in valuation", "impact": 0, "thesis_axis": "밸류", "basis": "시가총액 손실을 짚은 주가 변동 기사로 펀더멘털 근거는 제시되지 않음"}
+{"date": "2026-07-27", "source": "ticker:META", "event": "AI spending restraint will reward Magnificent 7 shares, expert says", "impact": -1, "thesis_axis": "수익성", "basis": "테슬라 실적에서 자본지출 증가와 현금 소진이 부각됐다"}
+{"date": "2026-07-27", "source": "ticker:TSLA", "event": "Why Tesla, Google, and other Mag 7 stocks are losing billions in valuation", "impact": 0, "thesis_axis": "밸류", "basis": "시가총액 감소를 다룬 주가 등락 보도로 사업 논지 변화 근거는 없다."}
+{"date": "2026-07-27", "source": "ticker:TSLA", "event": "AI spending restraint will reward Magnificent 7 shares, expert says", "impact": -1, "thesis_axis": "수익성", "basis": "테슬라 실적에서 자본지출 증가와 현금 소진이 부각됐다고 기사가 명시했다."}

@@ -2471,6 +2471,76 @@ function _buildDispatchStatusReport(): string {
     return lines.join('\n');
 }
 
+/* 데스크(매매) 현황 — 비서가 LLM 없이 결정적으로 답한다. "스윙 어때?" 류 질문에
+   CEO 로 떠넘기던 게 답이 안 돌아오던 원인이었다: 비서 컨텍스트에 매매 데스크
+   상태가 아예 없어서 답할 수 없었다. 현빈(15:40)·노유진(07:10)이 매일 만드는
+   보고서와 실시간 상태 파일을 직접 읽어 요약한다. 로컬 모델 품질과 무관하게 정확. */
+function _buildDeskStatusReport(): string {
+    const lines: string[] = ['📊 *매매 데스크 현황*\n'];
+    const jread = (p: string | null): any => {
+        try { return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null; } catch { return null; }
+    };
+    const lastJsonl = (p: string | null): any => {
+        try {
+            if (!p || !fs.existsSync(p)) return null;
+            const ls = fs.readFileSync(p, 'utf-8').trim().split('\n').filter(Boolean);
+            return ls.length ? JSON.parse(ls[ls.length - 1]) : null;
+        } catch { return null; }
+    };
+    const latestReview = (dir: string | null, suffix = '.md'): string => {
+        try {
+            if (!dir || !fs.existsSync(dir)) return '';
+            const fs2 = fs.readdirSync(dir).filter(n => n.endsWith(suffix)).sort();
+            if (!fs2.length) return '';
+            return fs.readFileSync(path.join(dir, fs2[fs2.length - 1]), 'utf-8').trim();
+        } catch { return ''; }
+    };
+
+    /* ── 스윙팀 ── */
+    lines.push('*🔵 스윙팀 (한국 단타)*');
+    const eq = lastJsonl(_tradingStatePath('equity_log.jsonl'));
+    const br = lastJsonl(_resolveTradingRoot() ? path.join(_resolveTradingRoot()!, 'ledger', 'shadow', 'breadth_log.jsonl') : null);
+    if (eq) {
+        lines.push(`  실계좌 ₩${Number(eq.equity_krw).toLocaleString()} · 보유 ${eq.n_positions ?? 0}종목`);
+    }
+    if (br) {
+        const pct = Math.round(Number(br.breadth) * 100);
+        lines.push(`  시장 폭 ${pct}% ${pct < 50 ? '→ 기준(50%) 밑이라 실매수 중단 중' : '→ 매수 가능'}`);
+    }
+    const sv = jread(_tradingStatePath('shadow_view.json'));
+    if (sv) {
+        const pnl = Number(sv.total_pnl_krw) || 0;
+        const sign = pnl > 0 ? '+' : '';
+        lines.push(`  섀도(가상) 보유 ${(sv.positions || []).length}종목 · 평가손익 ${sign}₩${pnl.toLocaleString()} (${sign}${sv.total_ret_pct}%)`);
+    }
+    const swReview = latestReview(_resolveTradingRoot() ? path.join(_resolveTradingRoot()!, 'ledger', 'reviews') : null);
+    if (swReview) {
+        lines.push(`  _최근 사후분석(현빈):_`);
+        lines.push(swReview.split('\n').slice(0, 8).map(l => `  ${l}`).join('\n'));
+    }
+    lines.push('');
+
+    /* ── 미장팀 ── */
+    lines.push('*🏛 미장팀 (미국 장기)*');
+    const pv = jread(_usLongtermStatePath('positions_view.json'));
+    if (pv && pv.total) {
+        lines.push(`  평가 ₩${Number(pv.total.value_krw).toLocaleString()} ($${Number(pv.total.value_usd).toLocaleString()}) · 수익률 ${pv.total.ret_pct >= 0 ? '+' : ''}${pv.total.ret_pct}%`);
+        if (typeof pv.rebalance_dday === 'number') {
+            lines.push(`  다음 리밸런싱 D-${pv.rebalance_dday} (${pv.rebalance_date})`);
+        }
+    }
+    const usReview = latestReview(_resolveUsLongtermRoot() ? path.join(_resolveUsLongtermRoot()!, 'ledger', 'reviews') : null, '_daily.md');
+    if (usReview) {
+        lines.push(`  _최근 사후분석(노유진):_`);
+        lines.push(usReview.split('\n').slice(0, 12).map(l => `  ${l}`).join('\n'));
+    }
+
+    if (!eq && !pv) {
+        return '📊 매매 데스크 상태 파일을 찾지 못했어요. 대시보드가 한 번 열려 데이터가 생성돼야 해요.';
+    }
+    return lines.join('\n');
+}
+
 async function handleTelegramViaSecretary(userText: string): Promise<void> {
     /* Mirror user's Telegram message into the sidebar chat */
     try { _activeChatProvider?.postSystemNote?.(`텔레그램: "${userText.slice(0, 200)}"`, '📱'); } catch { /* ignore */ }
@@ -2518,6 +2588,19 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
         await sendTelegramLong(status);
         _pushTelegramHistory('assistant', status.slice(0, 400));
         try { _activeChatProvider?.postSystemNote?.(`비서 → 텔레그램 (진행 상태)`, '💬'); } catch { /* ignore */ }
+        return;
+    }
+
+    /* 매매 데스크 현황 — "스윙 어때?" / "미장 수익률?" / "매매 어떻게 돼?" 류.
+       비서가 CEO 로 떠넘기면 답이 안 돌아오던 질문. 이제 현빈·노유진 보고서를
+       직접 읽어 결정적으로 답한다 (로컬 모델 안 거침). */
+    const deskQ = /(스윙|미장|섀도|쌔도|포트폴리오|매매|주식|투자|트레이딩|보유\s*종목|수익률|손익)/;
+    const deskAsk = /(어때|어떻게|어떤|얼마|현황|상태|상황|진행|잘\s*되|뭐\s*샀|보여|알려|정리|어디|몇)/;
+    if (deskQ.test(userText) && deskAsk.test(userText)) {
+        const report = _buildDeskStatusReport();
+        await sendTelegramLong(report);
+        _pushTelegramHistory('assistant', report.slice(0, 400));
+        try { _activeChatProvider?.postSystemNote?.(`비서 → 텔레그램 (데스크 현황)`, '📊'); } catch { /* ignore */ }
         return;
     }
 
@@ -2586,6 +2669,14 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
     if (companyLog && companyLog.trim()) {
         ctxBlock += companyLog;
     }
+    /* 매매 데스크 현황 — 정규식이 못 잡은 표현으로 물어도 비서가 답할 수 있게
+       컨텍스트에 넣는다. 이게 없으면 매매 질문을 CEO 로 떠넘기고 답이 유실된다. */
+    try {
+        const desk = _buildDeskStatusReport();
+        if (desk && !desk.startsWith('📊 매매 데스크 상태 파일')) {
+            ctxBlock += `\n\n[매매 데스크 현황 — 매매/스윙/미장/수익률 질문이면 dispatch 하지 말고 이걸로 직접 답하세요(mode: reply)]\n${desk.slice(0, 1600)}`;
+        }
+    } catch { /* ignore */ }
 
     let raw = '';
     try {
