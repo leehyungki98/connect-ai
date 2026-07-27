@@ -3033,7 +3033,7 @@ interface ReportScheduleEntry {
     hour: number;          /* 0-23 */
     minute: number;        /* 0-59 */
     days: number[];        /* 0=일 ~ 6=토 */
-    action: 'briefing' | 'tool';
+    action: 'briefing' | 'tool' | 'codex_health';
     tool?: string;
     agentId?: string;
     enabled: boolean;
@@ -3059,10 +3059,51 @@ function writeReportSchedule(s: { entries: ReportScheduleEntry[] }) {
     }
 }
 let _reportSchedulerTimer: NodeJS.Timeout | null = null;
+
+/** codex(레오) 인증 실태 점검 — 실제로 한 번 찔러본다.
+ *  공유계정이라 다른 사람이 로그인하면 이 토큰이 서버에서 무효화되는데, 그때
+ *  로컬 토큰 파일은 남아 `codex login status` 는 "Logged in" 이라 거짓말한다.
+ *  그래서 최소 프롬프트로 실제 호출해 401/token_invalidated 를 본다.
+ *  반환 ok=false 는 '인증 만료가 확실할 때만' — 네트워크 오류 등은 판단 보류(ok=true)해
+ *  거짓 경보를 막는다. */
+async function _checkCodexHealth(): Promise<{ ok: boolean; reason: string }> {
+    const cwd = _resolveTradingRoot() || getCompanyDir();
+    try {
+        const r = await runCommandCaptured(
+            `codex exec ${JSON.stringify('ping')}`, cwd, () => {}, 90000,
+            'both', { PYTHONIOENCODING: 'utf-8' });
+        const low = (r.output || '').toLowerCase();
+        const authDead = low.includes('token_invalidated')
+            || low.includes('authentication token has been invalidated')
+            || low.includes('401 unauthorized')
+            || low.includes('please try signing in again')
+            || low.includes('not logged in');
+        if (authDead) return { ok: false, reason: 'codex 인증 만료(로그아웃)' };
+        if (r.timedOut) return { ok: true, reason: '응답 지연 — 판단 보류' };
+        return { ok: true, reason: '정상' };
+    } catch (e: any) {
+        /* 실행 자체 실패(codex 없음 등)는 인증 문제와 구분 — 거짓 경보 안 냄 */
+        return { ok: true, reason: `점검 실패(보류): ${e?.message || e}` };
+    }
+}
+
 async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
     try {
         if (entry.action === 'briefing') {
             await _runDailyBriefingOnce(true);
+        } else if (entry.action === 'codex_health') {
+            /* 저녁 점검 — 꺼졌을 때만 영숙이 알린다. 정상이면 조용히(매일 '정상' 알림은 소음). */
+            const h = await _checkCodexHealth();
+            if (!h.ok) {
+                await sendTelegramReport(
+                    `⚠️ *영숙*: codex(선정자 레오)가 로그아웃됐어요.\n\n` +
+                    `공유계정이라 누가 새로 로그인하면서 풀린 것 같아요. ` +
+                    `내일 아침 프리마켓 전에 터미널에서 \`codex login\` 재로그인 해주세요.\n\n` +
+                    `_(재로그인 전까지 레오가 신규 진입 제안을 못 냅니다)_`);
+                try { _activeChatProvider?.postSystemNote?.(`📆 codex 점검: ❌ ${h.reason} → 영숙 알림 발송`, '⚠️'); } catch { /* ignore */ }
+            } else {
+                try { _activeChatProvider?.postSystemNote?.(`📆 codex 점검: ✅ ${h.reason}`, '📆'); } catch { /* ignore */ }
+            }
         } else if (entry.action === 'tool' && entry.tool && entry.agentId) {
             const toolDir = path.join(getCompanyDir(), '_agents', entry.agentId, 'tools');
             const scriptPath = path.join(toolDir, `${entry.tool}.py`);
