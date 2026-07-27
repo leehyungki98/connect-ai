@@ -104,6 +104,22 @@ export const AGENTS: Record<string, AgentDef> = {
     profileImage: '코다리.png',
     persona: '시니어 엔지니어. 코드 한 줄도 그냥 안 넘김. "테스트 통과 확인했어요" 같은 근거 있는 보고. 요청 범위를 넘는 리팩토링·추상화 금지.'
   },
+  /* 정리 담당 — 두 팀 공용. 전문가(양 데스크)가 던진 결론+근거를 질문에 맞게 엮는다.
+     2026-07-27 미장 정세로 파일럿 시작, 스윙·코드로 확장 예정. */
+  organizer: {
+    id: 'organizer',
+    name: '윤가온',
+    role: '정리 담당 · Synthesizer',
+    emoji: '🧩',
+    color: '#A78BFA',
+    specialty: '전문가가 던진 결론+근거를 사용자 질문에 맞게 엮어 쉬운 말로 정리. 여러 전문가·양 데스크를 걸친 질문에 하나로 답한다 (현재 미장 정세 파일럿)',
+    tagline: '흩어진 근거를 하나로 엮습니다 — 없는 말은 지어내지 않습니다',
+    mission: '🧩 정리 담당',
+    desk: 'shared',
+    /* 초상화 슬롯 — 파일을 넣으면 자동 반영, 없으면 이모지 폴백 */
+    profileImage: '윤가온.jpeg',
+    persona: '해석하지 않고 엮는다. 전문가가 말한 근거에서만 문장을 만들고, 근거에 없으면 "근거가 약하다"고 쓴다. 지능은 전문가에게 있고 자기는 편집·번역이라는 걸 안다.'
+  },
   business: {
     id: 'business',
     name: '현빈',
@@ -203,20 +219,6 @@ export const AGENTS: Record<string, AgentDef> = {
     profileImage: '노유진.jpeg',
     persona: '측정에 엄격. 좋은 성과에도 "이건 환율 기여분입니다" 같은 단서를 반드시 단다. 사후 선택 편향을 지적하는 걸 자기 일로 안다.'
   },
-  us_organizer: {
-    id: 'us_organizer',
-    name: '윤가온',
-    role: '정리 담당 · Synthesizer',
-    emoji: '🧩',
-    color: '#A78BFA',
-    specialty: '전문가(강해원 등)가 던진 결론+근거를 사용자 질문에 맞게 엮어 쉬운 말로 정리. 여러 전문가를 걸친 질문에 하나로 답한다',
-    tagline: '흩어진 근거를 하나로 엮습니다 — 없는 말은 지어내지 않습니다',
-    mission: '🧩 정세 정리',
-    desk: 'us',
-    /* 초상화 슬롯 — 파일을 넣으면 자동 반영, 없으면 이모지 폴백 */
-    profileImage: '윤가온.jpeg',
-    persona: '해석하지 않고 엮는다. 전문가가 말한 근거에서만 문장을 만들고, 근거에 없으면 "근거가 약하다"고 쓴다. 지능은 전문가에게 있고 자기는 편집·번역이라는 걸 안다.'
-  },
 
   /* ── 이하 콘텐츠 시절 유닛 — 화면 목록에서 제외 (map 잔류는 참조 호환용) ── */
   designer: {
@@ -263,9 +265,9 @@ export const AGENT_ORDER = [
   /* 스윙팀 (trading/) — 총괄팀장이 팀 맨 앞 */
   'swing_lead', 'youtube', 'instagram', 'business',
   /* 미장팀 (us-longterm/) — 총괄팀장(한도윤)이 팀 맨 앞 */
-  'us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review', 'us_organizer',
+  'us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review',
   /* 두 팀 공용 */
-  'developer', 'secretary',
+  'developer', 'secretary', 'organizer',
 ];
 export const SPECIALIST_IDS = AGENT_ORDER.filter(id => id !== 'ceo');
 
@@ -273,6 +275,6 @@ export const SPECIALIST_IDS = AGENT_ORDER.filter(id => id !== 'ceo');
     각 팀의 총괄팀장이 ids 맨 앞에 온다 (swing_lead, us_lead). */
 export const DESK_TEAMS: Record<string, { label: string; ids: string[] }> = {
   swing: { label: '스윙팀 · 한국 주식 (trading/)', ids: ['swing_lead', 'youtube', 'instagram', 'business'] },
-  us: { label: '미장팀 · 미국 주식 (us-longterm/)', ids: ['us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review', 'us_organizer'] },
-  shared: { label: '공용', ids: ['developer', 'secretary'] },
+  us: { label: '미장팀 · 미국 주식 (us-longterm/)', ids: ['us_lead', 'us_selector', 'us_judge', 'us_intel', 'us_review'] },
+  shared: { label: '공용', ids: ['developer', 'secretary', 'organizer'] },
 };
