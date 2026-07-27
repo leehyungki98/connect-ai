@@ -71,3 +71,45 @@ def test_prompt_contains_candidates_and_format():
     p = build_prompt(CANDS, PF)
     assert "005930" in p and "000660" in p and "035720" in p
     assert '"decisions"' in p and "JSON" in p
+
+
+def test_codex_auth_expired_gives_clear_message(monkeypatch):
+    """codex 인증 만료(401)는 '재로그인 필요'로 명확히 — 사흘 조용사고 재발 방지."""
+    import subprocess
+
+    from autotrader.brain import client
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = ("ERROR ...: unexpected status 401 Unauthorized: Your authentication "
+                  "token has been invalidated. Please try signing in again., "
+                  "auth error code: token_invalidated")
+
+    monkeypatch.setattr(client.shutil, "which", lambda _n: "codex")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc())
+    try:
+        client._run_cli("codex", "hi")
+        assert False, "예외가 나야 한다"
+    except RuntimeError as e:
+        assert "codex login" in str(e) and "재로그인" in str(e)
+
+
+def test_generic_cli_failure_keeps_raw(monkeypatch):
+    """인증 외 실패는 기존대로 원문 노출 (오진 방지)."""
+    import subprocess
+
+    from autotrader.brain import client
+
+    class _Proc:
+        returncode = 2
+        stdout = ""
+        stderr = "some other error: file not found"
+
+    monkeypatch.setattr(client.shutil, "which", lambda _n: "codex")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc())
+    try:
+        client._run_cli("codex", "hi")
+        assert False
+    except RuntimeError as e:
+        assert "codex login" not in str(e) and "file not found" in str(e)

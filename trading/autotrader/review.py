@@ -45,14 +45,26 @@ def run_postmarket(
     runner: Callable | None = None,
     llm_review: bool = False,
     review_dir: Path | None = None,
+    allocation_krw: int | None = None,
 ) -> dict:
     """review_dir: 사후분석 저장 위치. 기본은 state_dir/reviews (하위호환).
 
     운영 스크립트는 trading/ledger/reviews 를 넘긴다 — 사후분석은 재생성이
     안 되는 학습 자산이라 커밋 금지 구역인 state/ 밖에 두고 git 으로 남긴다.
+
+    allocation_krw: 데스크 배분액. day_start(프리마켓)가 데스크 지분(250만)으로
+    기록되므로, 여기서도 같은 기준으로 스케일해야 일일수익률이 맞는다. None 이면
+    기본 SWING_ALLOCATION_KRW 를 쓴다. 이 스케일이 없으면 실계좌(1,000만) 대비
+    day_start(250만)를 나눠 +300% 같은 거짓 수익률이 찍힌다 (2026-07-27 실제 사고).
     """
     state_dir = Path(state_dir)
     pf = kis.get_portfolio()
+    # 프리마켓과 동일 기준으로 — 데스크 지분으로 축소. (0 이면 스케일 생략: 테스트용)
+    from autotrader.config import SWING_ALLOCATION_KRW
+    alloc = SWING_ALLOCATION_KRW if allocation_krw is None else allocation_krw
+    if alloc:
+        from autotrader.pipeline import desk_portfolio
+        pf = desk_portfolio(pf, alloc)
 
     # 일일 수익률 (관찰용) — day_start 기록이 오늘 것일 때만 계산
     daily_return_bp = None

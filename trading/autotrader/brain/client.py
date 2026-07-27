@@ -131,6 +131,16 @@ def _run_cli(brain: str, prompt: str, schema: Path | None = None) -> str:
         detail = " | ".join(
             x for x in (proc.stderr.strip(), proc.stdout.strip()) if x
         )[:500]
+        # 인증 만료를 콕 집어 알린다 — 사흘째 조용히 죽어 있던 사고(2026-07-27) 재발 방지.
+        # 이건 코드로 못 고친다(사람이 재로그인). 메시지가 명확해야 손이 간다.
+        low = detail.lower()
+        if brain == "codex" and ("token_invalidated" in low
+                                 or "authentication token has been invalidated" in low
+                                 or "401 unauthorized" in low):
+            raise RuntimeError(
+                "codex 인증 만료 — 터미널에서 `codex login` 재로그인 필요. "
+                "(선정자 레오가 멈춘 상태. 재로그인 전까지 신규 진입 제안이 안 나온다) "
+                f"| 원문: {detail[:200]}")
         raise RuntimeError(f"{brain} CLI failed (rc={proc.returncode}): {detail}")
     return proc.stdout
 
