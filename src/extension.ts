@@ -2591,6 +2591,39 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
         return;
     }
 
+    /* 미장 정세 질문 → 윤가온(정리 담당)이 강해원 근거를 엮어 쉬운 말로 답한다.
+       "정세 어때?" / "강해원 뭐 분석했어?" / "엔비디아 뉴스 어때?" 류. deskQ 보다
+       먼저 둔다 — 더 구체적인 정세 질문이 일반 현황 요약보다 우선. LLM 을 거치므로
+       (~수십 초) typing 표시하고 스크립트 출력을 그대로 전달. */
+    const intelQ = /(정세|뉴스|리서치|분석|강해원|엔비디아|nvidia|tsmc|메타|반도체|amd|테마|매크로)/i;
+    const intelAsk = /(어때|어떻|왜|이유|정리|짚어|분석|말해|알려|설명|보여|긍정|부정|호재|악재)/;
+    if (intelQ.test(userText) && intelAsk.test(userText)) {
+        const usRoot = _resolveUsLongtermRoot();
+        if (usRoot) {
+            await sendTelegramReport(`🧩 *윤가온*이 강해원 정세 기록을 정리하는 중이에요… (잠깐만요)`);
+            sendTelegramTyping().catch(() => { /* ignore */ });
+            try {
+                const r = await runCommandCaptured(
+                    `${_pythonCmd()} ${JSON.stringify('scripts/run_intel_brief.py')}`,
+                    usRoot, () => { /* no stream */ }, 180000, 'stdout',
+                    { PYTHONIOENCODING: 'utf-8', INTEL_BRIEF_Q: userText });
+                const body = (r.output || '').trim();
+                if (body && !r.timedOut) {
+                    await sendTelegramLong(body);
+                    _pushTelegramHistory('assistant', body.slice(0, 400));
+                    try { _activeChatProvider?.postSystemNote?.(`윤가온 → 텔레그램 (정세 정리)`, '🧩'); } catch { /* ignore */ }
+                    return;
+                }
+                await sendTelegramReport(`🧩 윤가온: 지금 정리를 못 끝냈어요. 강해원 채점이 아직 안 됐거나 시간이 초과됐을 수 있어요.`);
+                return;
+            } catch {
+                await sendTelegramReport(`🧩 윤가온 호출에 실패했어요. 잠시 후 다시 시도해주세요.`);
+                return;
+            }
+        }
+        /* us-longterm 루트를 못 찾으면 아래 일반 경로로 흘려보냄 */
+    }
+
     /* 매매 데스크 현황 — "스윙 어때?" / "미장 수익률?" / "매매 어떻게 돼?" 류.
        비서가 CEO 로 떠넘기면 답이 안 돌아오던 질문. 이제 현빈·노유진 보고서를
        직접 읽어 결정적으로 답한다 (로컬 모델 안 거침). */
