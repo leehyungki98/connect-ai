@@ -74,6 +74,51 @@ def _rank_origin_table(rows: list) -> None:
     print("  실계좌가 쓴 '선정자'와 같은 칸에 넣고 평균 내지 마라.")
 
 
+# 순위 반전 가설 최소 표본 — 각 순위대(상위/하위)가 이만큼은 청산돼야 의심 승격.
+# 22건짜리 초기 표본이라 낮게 잡되(각 5), '의심'으로만 낸다(단정 아님).
+_REVERSAL_MIN_PER_TIER = 5
+
+
+def detect_reversal(rows: list, breadth_max: float = 0.30,
+                    min_per_tier: int = _REVERSAL_MIN_PER_TIER,
+                    gap_pp: float = 3.0) -> dict | None:
+    """약세장 모멘텀 반전 탐지 (순수) — 폭 낮을 때 상위 순위가 하위보다 더 깨지나.
+
+    반환: 의심되면 {top_avg, low_avg, n_top, n_low}, 아니면 None.
+    조건: 폭<breadth_max 구간에서 각 순위대 표본 min_per_tier 이상 +
+          하위평균 − 상위평균 ≥ gap_pp (하위가 그만큼 나음).
+    """
+    weak = [r for r in rows if r.get("status") == "closed"
+            and r.get("breadth") is not None and r["breadth"] < breadth_max
+            and r.get("rank")]
+    top = [r["ret_pct"] for r in weak if r["rank"] <= 3]
+    low = [r["ret_pct"] for r in weak if r["rank"] >= 6]
+    if len(top) < min_per_tier or len(low) < min_per_tier:
+        return None
+    top_avg, low_avg = sum(top) / len(top), sum(low) / len(low)
+    if low_avg - top_avg < gap_pp:
+        return None
+    return {"top_avg": top_avg, "low_avg": low_avg,
+            "n_top": len(top), "n_low": len(low)}
+
+
+def _momentum_reversal_check(rows: list) -> None:
+    """현빈의 새 눈 — 반전이 의심되면 가설로 낸다. **지시가 아니라 검증 후보.**
+
+    2026-08-03 관찰: 하락장에서 1~3등 -6%(승률0), 6등+ +1%(승률50)로 뒤집혔다.
+    센 종목이 약세장에서 먼저·크게 빠지는 패턴일 수 있다.
+    """
+    r = detect_reversal(rows)
+    if not r:
+        return
+    print("\n🔬 가설(의심) — 약세장 모멘텀 반전")
+    print(f"   폭 30%↓ 구간: 상위(1~3등) 평균 {r['top_avg']:+.1f}%(n={r['n_top']}) "
+          f"vs 하위(6등+) {r['low_avg']:+.1f}%(n={r['n_low']})")
+    print("   → 약한 시장에선 센 종목이 먼저 크게 빠지는 것으로 보인다. "
+          "'폭 낮으면 상위 모멘텀 회피 / 평균회귀' 를 백테스트로 검증해볼 후보.")
+    print("   ⚠ 표본 적음 — 가설일 뿐. 라이브 전략 변경은 백테스트·승인 후.")
+
+
 def main() -> int:
     rows = [r for r in shadow.load_samples()
             if r.get("status") in ("closed", "unfilled")]
@@ -138,6 +183,9 @@ def main() -> int:
     # ── 순위·출처별 — 섞어서 평균 내면 "몇 등까지 사도 되나"에 답을 못 한다 ──
     _rank_origin_table(rows)
     print("※ 진입은 실전과 동일한 지정가 체결 조건 — 미체결도 기록된다")
+
+    # ── 현빈의 새 눈 — 약세장 모멘텀 반전 자동 탐지 ──
+    _momentum_reversal_check(rows)
 
     if hyp:
         print("\n── 개선 가설 (제안후보) ──")
