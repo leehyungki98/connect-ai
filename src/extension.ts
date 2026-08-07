@@ -3034,6 +3034,9 @@ interface ReportScheduleEntry {
     minute: number;        /* 0-59 */
     days: number[];        /* 0=일 ~ 6=토 */
     action: 'briefing' | 'tool' | 'codex_health';
+    /* 2026-08-07 — 알림 정책. 'always'(기본): 전문 발송. 'never': 조용히 실행만
+       (단, 실계좌 체결·🚨 급락·리밸런싱 D-day·실행실패는 항상 올림). 액션 없으면 무음. */
+    notify?: 'always' | 'never';
     tool?: string;
     agentId?: string;
     enabled: boolean;
@@ -3122,23 +3125,40 @@ async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
             );
             const out = (r.output || '').trim();
             const status = r.exitCode === 0 ? '✅' : `❌ exit ${r.exitCode}`;
-            /* 매수·매도는 사장님이 제일 먼저 볼 줄이라 본문 위로 뽑아낸다.
-               판단은 하지 않고 스크립트가 찍은 줄을 그대로 옮기기만 한다. */
-            const trades = out.split('\n')
-                .map(l => l.trim())
-                .filter(l => /^(BUY|EXIT)\s*:/i.test(l));
-            const head = trades.length
-                ? `\n\n💰 *체결*\n${trades.map(t => `• ${t}`).join('\n')}`
-                : '';
-            /* 성공 보고는 코드 펜스로 감싸지 않는다 — 펜스가 붙으면 사후분석
-               마크다운이 통째로 터미널 덤프처럼 보인다. 실패했을 때만 원문을
-               그대로 감싸서 진단에 쓴다. */
-            const body = r.exitCode === 0
-                ? out.slice(0, 3000)
-                : `\`\`\`\n${out.slice(0, 2500)}\n\`\`\``;
-            const msg = `📱 *영숙* — ${entry.label} ${status}${head}\n\n${body}`;
-            try { await sendTelegramLong(msg); } catch { /* silent */ }
-            try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} 자동 실행 ${status}`, '📆'); } catch { /* ignore */ }
+
+            /* 알림 정책 (2026-08-07 — 사장님: 리포트 말고 '액션·돈' 때만 연락).
+               notify: 'always'(옛 기본) | 'never'(조용) | 'on_action'(액션 있을 때만).
+               필드가 없으면 하위호환으로 'always'. */
+            const notify: string = (entry as any).notify || 'always';
+
+            /* 액션 줄만 뽑는다 — 실계좌 체결·급락 경보·리밸런싱 D-day. 이것들은
+               notify 정책과 무관하게 항상 올린다(돈·결정이 걸린 줄). 섀도(가짜돈)
+               청산은 제외 — 실제 돈이 아니라서. */
+            const lines = out.split('\n').map(l => l.trim());
+            const trades = lines.filter(l => /^(BUY|EXIT)\s*:/i.test(l));
+            const alerts = lines.filter(l =>
+                /^🚨/.test(l) || /^🔔\s*리밸런싱\s*D-/.test(l) || /매도\/VOO 검토/.test(l));
+            const actionLines = [...trades, ...alerts];
+
+            let send = false;
+            let msg = '';
+            if (actionLines.length) {
+                /* 액션 있음 → 짧게 그 줄만. 리포트 전문은 안 붙인다(사장님이 안 보고 싶어함). */
+                send = true;
+                const kind = trades.length ? '💰 *체결*' : '🔔 *확인 필요*';
+                msg = `${kind} — ${entry.label}\n${actionLines.map(t => `• ${t}`).join('\n')}`;
+            } else if (r.exitCode !== 0) {
+                /* 실패는 진단이 필요하니 조용 정책이어도 올린다 (조용히 사흘 죽는 사고 방지). */
+                send = true;
+                msg = `⚠️ *영숙* — ${entry.label} 실행 실패 (exit ${r.exitCode})\n\`\`\`\n${out.slice(0, 1500)}\n\`\`\``;
+            } else if (notify === 'always') {
+                send = true;
+                msg = `📱 *영숙* — ${entry.label} ${status}\n\n${out.slice(0, 3000)}`;
+            }
+            /* notify==='never'/'on_action' 이고 액션 없으면 send=false → 조용히 실행만. */
+
+            if (send) { try { await sendTelegramLong(msg); } catch { /* silent */ } }
+            try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} ${status}${send ? ' → 알림' : ' (조용)'}`, '📆'); } catch { /* ignore */ }
         }
     } catch (e: any) {
         console.warn('[scheduler] entry failed:', e?.message || e);
