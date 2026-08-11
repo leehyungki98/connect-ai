@@ -1,0 +1,63 @@
+{
+  "date": "2026-07-20",
+  "tag": "init",
+  "reason": "최초 배분 (데스크 설립)",
+  "nav_before_usd": 5062.71,
+  "nav_after_usd": 5058.15,
+  "weights_before": {
+    "ETF": 0.0,
+    "GROWTH": 0.0,
+    "CASH": 1.0
+  },
+  "weights_after": {
+    "ETF": 0.60054,
+    "GROWTH": 0.30027,
+    "CASH": 0.099189
+  },
+  "fills": [
+    {
+      "ticker": "VOO",
+      "side": "BUY",
+      "sleeve": "ETF",
+      "qty": 4.446367,
+      "price": 683.1699829101562,
+      "gross_usd": 3037.62,
+      "commission_usd": 3.0376,
+      "sec_fee_usd": 0.0,
+      "fee_waived": false
+    },
+    {
+      "ticker": "NVDA",
+      "side": "BUY",
+      "sleeve": "GROWTH",
+      "qty": 2.496281,
+      "price": 202.80999755859372,
+      "gross_usd": 506.27,
+      "commission_usd": 0.5063,
+      "sec_fee_usd": 0.0,
+      "fee_waived": false
+    },
+    {
+      "ticker": "TSM",
+      "side": "BUY",
+      "sleeve": "GROWTH",
+      "qty": 1.270856,
+      "price": 398.3699951171875,
+      "gross_usd": 506.27,
+      "commission_usd": 0.5063,
+      "sec_fee_usd": 0.0,
+      "fee_waived": false
+    },
+    {
+      "ticker": "META",
+      "side": "BUY",
+      "sleeve": "GROWTH",
+      "qty": 0.783689,
+      "price": 646.010009765625,
+      "gross_usd": 506.27,
+      "commission_usd": 0.5063,
+      "sec_fee_usd": 0.0,
+      "fee_waived": false
+    }
+  ]
+}

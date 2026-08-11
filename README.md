@@ -2,11 +2,11 @@
   <img src="assets/icon.png" width="120" alt="Connect AI Logo" />
 </p>
 
-<h1 align="center">Connect AI v2 (P-Reinforce)</h1>
+<h1 align="center">Hyeonggi AI Workspace</h1>
 
 <p align="center">
-  <strong>100% Local · 100% Offline · Autonomous Knowledge Engine</strong><br/>
-  VS Code / Cursor 확장 프로그램으로, 당신의 낡은 IDE를 최상위 에이전트 대학(A.U)의 심장으로 진화시킵니다.
+  <strong>혀엉기님만의 1인 기업 · 에이전트 팀 · 제2의 두뇌</strong><br/>
+  100% Local · 100% Offline 환경에서 구동되는 나만의 자율 지식 및 업무 자동화 시스템입니다.
 </p>
 
 <p align="center">

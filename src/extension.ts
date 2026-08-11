@@ -5,6 +5,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync } from 'child_process';
+/* SSE 청크는 TCP 경계에서 잘리므로 한글(3바이트)이 두 청크에 걸치면
+   Buffer.toString() 이 각 조각을 따로 디코드해 U+FFFD 로 깨진다.
+   StringDecoder 는 불완전한 바이트를 다음 청크까지 물고 있는다. */
+import { StringDecoder } from 'string_decoder';
 
 // ============================================================
 // Security helpers
@@ -604,13 +608,14 @@ function runCommandCaptured(
     cwd: string,
     onChunk: (text: string) => void,
     timeoutMs = 60000,
-    captureStream: 'both' | 'stdout' = 'both'
+    captureStream: 'both' | 'stdout' = 'both',
+    extraEnv?: Record<string, string>
 ): Promise<{ exitCode: number; output: string; timedOut: boolean }> {
     return new Promise((resolve) => {
         const child = spawn(cmd, {
             cwd,
             shell: true,
-            env: process.env,
+            env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
             stdio: ['ignore', 'pipe', 'pipe']
         });
         let buf = '';
@@ -621,11 +626,14 @@ function runCommandCaptured(
             if (buf.length > 30000) buf = buf.slice(-30000);
             onChunk(s);
         };
-        child.stdout?.on('data', (d: Buffer) => append(d.toString()));
+        /* 스트리밍 청크는 멀티바이트 문자 중간에서 잘릴 수 있어 StringDecoder 사용. */
+        const outDec = new StringDecoder('utf8');
+        const errDec = new StringDecoder('utf8');
+        child.stdout?.on('data', (d: Buffer) => append(outDec.write(d)));
         /* v2.89.50 — captureStream='stdout' 일 때 stderr는 무시. 스크립트가 진행 메시지·
            로그·DeprecationWarning을 stderr로 보내도 채팅창엔 안 새서 깔끔. */
         if (captureStream === 'both') {
-            child.stderr?.on('data', (d: Buffer) => append(d.toString()));
+            child.stderr?.on('data', (d: Buffer) => append(errDec.write(d)));
         }
         const killTimer = setTimeout(() => {
             timedOut = true;
@@ -695,6 +703,36 @@ function _isLMStudioEngine(ollamaBase: string): boolean {
        이 헬퍼를 거치니 전 라인이 마비됐었음. 원래 로직 복원: 1234 포트 또는
        /v1 경로면 LM Studio. */
     return ollamaBase.includes('1234') || ollamaBase.includes('v1');
+}
+
+/* 실행이 긴 트레이딩 도구 — KRX 수집 + 브레인 2단계라 기본 90초 안에 안 끝난다.
+   호출 사이트에서 타임아웃을 늘려 잡는 데 쓴다. */
+const _LONG_RUNNING_TOOLS = new Set([
+    'premarket_run.py', 'backtest_run.py', 'improve_run.py', 'postmarket_review.py',
+]);
+
+/* Gemini는 OpenAI 호환 엔드포인트를 제공한다. 기존 LM Studio 분기가 이미
+   /chat/completions + SSE 스트리밍이라 요청·응답 모양이 그대로 맞는다.
+   그래서 새 분기를 만들지 않고 주소와 인증 헤더만 갈아끼운다.
+   판별 기준은 모델 이름 — gemini-* 면 클라우드, 아니면 로컬 엔진. */
+const GEMINI_OPENAI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
+function _geminiApiKey(): string {
+    try {
+        return (vscode.workspace.getConfiguration('connectAiLab').get<string>('geminiApiKey', '') || '').trim();
+    } catch { return ''; }
+}
+/** 모델이 Gemini면 {url, headers}, 아니면 null. 키가 없으면 던진다 —
+ *  조용히 로컬로 폴백하면 "왜 Gemini가 안 쓰이지"로 헤매게 된다. */
+function _geminiEndpoint(modelName: string): { url: string; headers: Record<string, string> } | null {
+    if (!/^gemini[-.]/i.test((modelName || '').trim())) return null;
+    const key = _geminiApiKey();
+    if (!key) {
+        throw new Error('Gemini 모델이 지정됐는데 API 키가 없습니다 — 설정에서 connectAiLab.geminiApiKey를 입력하세요.');
+    }
+    return {
+        url: `${GEMINI_OPENAI_BASE}/chat/completions`,
+        headers: { Authorization: `Bearer ${key}` },
+    };
 }
 
 /* v2.89.66 — _getBrainDir, _isBrainDirExplicitlySet, getCompanyDir, COMPANY_SUBDIR,
@@ -1644,17 +1682,26 @@ function _markdownToTelegram(src: string): string {
   return s.trim();
 }
 
-async function sendTelegramReport(text: string): Promise<boolean> {
+async function sendTelegramReport(text: string, buttons?: Array<Array<{ text: string; data: string }>>): Promise<boolean> {
   const { token, chatId } = readTelegramConfig();
   if (!token || !chatId) return false;
   try {
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    await axios.post(url, {
+    const body: any = {
       chat_id: chatId,
       text: _markdownToTelegram(text).slice(0, 4000),
       parse_mode: 'Markdown',
       disable_web_page_preview: true
-    }, { timeout: 8000 });
+    };
+    /* 인라인 버튼 — 카드 심사처럼 오타 한 글자가 잘못된 승인으로 이어지는
+       조작은 타이핑 대신 버튼으로 받는다. callback_data 는 64바이트 상한. */
+    if (buttons?.length) {
+      body.reply_markup = {
+        inline_keyboard: buttons.map(row =>
+          row.map(b => ({ text: b.text, callback_data: b.data.slice(0, 64) }))),
+      };
+    }
+    await axios.post(url, body, { timeout: 8000 });
     return true;
   } catch {
     return false;
@@ -2003,21 +2050,30 @@ function readToolAutonomyLevel(agentId: string): number {
     return 2; // Draft is the safe default — agent prepares, user approves.
 }
 
-async function _quickLLMCall(systemPrompt: string, userMsg: string, maxTokens = 64): Promise<string> {
+async function _quickLLMCall(systemPrompt: string, userMsg: string, maxTokens = 64, agentId = ''): Promise<string> {
     const { ollamaBase, defaultModel, timeout } = getConfig();
-    const isLMStudio = _isLMStudioEngine(ollamaBase);
-    const apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
+    /* agentId를 주면 그 에이전트에 배정된 모델을 쓴다 (_shared/agent_models.json).
+       비서는 lite, 총괄은 flash 처럼 자리마다 다른 모델을 쓰기 위한 것. */
+    const model = (agentId ? getAgentModel(agentId, defaultModel) : defaultModel) || defaultModel;
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMsg }
     ];
     const tmo = Math.min(timeout || 60000, 60000);
+    const gem = _geminiEndpoint(model);
+    if (gem) {
+        const body = { model, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
+        const r = await axios.post(gem.url, body, { timeout: tmo, headers: gem.headers });
+        return r.data?.choices?.[0]?.message?.content?.toString().trim() || '';
+    }
+    const isLMStudio = _isLMStudioEngine(ollamaBase);
+    const apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
     if (isLMStudio) {
-        const body = { model: defaultModel, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
+        const body = { model, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
         const r = await axios.post(apiUrl, body, { timeout: tmo });
         return r.data?.choices?.[0]?.message?.content?.toString().trim() || '';
     }
-    const body = { model: defaultModel, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
+    const body = { model, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
     const r = await axios.post(apiUrl, body, { timeout: tmo });
     return r.data?.message?.content?.toString().trim() || '';
 }
@@ -2026,7 +2082,7 @@ const CEO_CLASSIFIER_PROMPT = _loadPrompt('ceo-classifier.md');
 const SECRETARY_TELEGRAM_PROMPT = _loadPrompt('secretary-telegram.md');
 async function classifyToAgent(text: string): Promise<string> {
     try {
-        const out = await _quickLLMCall(_personalizePrompt(CEO_CLASSIFIER_PROMPT), text, 16);
+        const out = await _quickLLMCall(_personalizePrompt(CEO_CLASSIFIER_PROMPT), text, 16, 'ceo');
         const id = out.trim().toLowerCase().replace(/[^a-z]/g, '');
         if (AGENTS[id]) return id;
     } catch { /* fall through to keyword router */ }
@@ -2080,6 +2136,59 @@ async function handleTelegramCommand(text: string): Promise<void> {
         const newStatus = cmd === '/done' ? 'done' : 'cancelled';
         updateTrackerTask(match.id, { status: newStatus, evidence: cmd === '/done' ? '사용자 텔레그램 확인' : '사용자 취소' });
         await sendTelegramReport(`${cmd === '/done' ? '✅' : '✖️'} \`${match.id.slice(-9)}\` ${match.title}\n→ ${newStatus === 'done' ? '완료' : '취소'} 처리됨.`);
+        return;
+    }
+    /* 변경 제안 카드 심사 — 유일한 사용자 승인 지점.
+       LLM 을 거치지 않고 결정적으로 처리한다. 매매 전략을 바꾸는 결정이라
+       비서가 자연어로 해석하다 오작동하면 안 된다. */
+    if (cmd === '/cards' || cmd === '/card' || cmd === '/approve' || cmd === '/reject' || cmd === '/revise') {
+        const sub = cmd === '/cards' ? 'list' : (cmd === '/card' ? 'show' : cmd.slice(1));
+        const parts = rest.split(/\s+/).filter(Boolean);
+        const cardId = sub === 'list' ? '' : (parts.shift() || '');
+        const note = parts.join(' ').trim();
+        if (sub !== 'list' && !cardId) {
+            await sendTelegramReport(
+                `사용법: \`${cmd} <id>\`${sub === 'reject' || sub === 'revise' ? ' <사유/지시>' : ''}\n` +
+                `대기 목록은 \`/cards\` 로 확인하세요. id 는 뒤 6자리만 입력해도 됩니다.`);
+            return;
+        }
+        if ((sub === 'reject' || sub === 'revise') && !note) {
+            await sendTelegramReport(`\`${cmd}\` 에는 ${sub === 'reject' ? '거부 사유' : '수정 지시'}가 필요해요.`);
+            return;
+        }
+        const tradingRoot = _resolveTradingRoot();
+        if (!tradingRoot) {
+            await sendTelegramReport('⚠️ trading 폴더를 찾지 못했어요.');
+            return;
+        }
+        const argv = ['scripts/run_proposals.py', sub, cardId, ...(note ? [note] : [])].filter(Boolean);
+        if (sub === 'approve') {
+            await sendTelegramReport(`⏳ \`${cardId}\` 승인 게이트 실행 중 — 금지구역 검사 → diff 적용 → 전체 테스트. 잠시만요.`);
+        }
+        const r = await runCommandCaptured(
+            `${_pythonCmd()} ${argv.map(a => JSON.stringify(a)).join(' ')}`,
+            tradingRoot, () => {}, 900000, 'both', { PYTHONIOENCODING: 'utf-8' },
+        );
+        const out = (r.output || '').trim() || '(출력 없음)';
+        /* 목록·상세에는 버튼을 붙인다. 카드 id 는 뒤 6자리라 오타 한 글자가
+           엉뚱한 승인이 될 수 있어, 타이핑 대신 눌러서 고르게 한다. */
+        const ids = [...new Set(
+            [...out.matchAll(/\[(\d{6})\]|카드 (\d{6})/g)].map(m => m[1] || m[2]))];
+        let buttons: Array<Array<{ text: string; data: string }>> | undefined;
+        if (sub === 'list' && ids.length) {
+            buttons = ids.map(id => [{ text: `📄 ${id} 자세히`, data: `/card ${id}` }]);
+        } else if (sub === 'show' && ids.length) {
+            const id = ids[0];
+            buttons = [
+                [{ text: '✅ 승인', data: `/approve ${id}` }],
+                [{ text: '❌ 거부', data: `/reject ${id} 폰에서 거부` }],
+            ];
+        }
+        await sendTelegramLong(`📋 *제안 카드* — \`${cmd}\`\n\n${out.slice(0, 3000)}`);
+        if (buttons) {
+            await sendTelegramReport(
+                sub === 'list' ? '어느 카드를 볼까요?' : '이 카드를 어떻게 할까요?', buttons);
+        }
         return;
     }
     /* P1-8: edit commands — let the user retarget tasks without re-creating.
@@ -2292,36 +2401,23 @@ function _buildCapabilityReport(): string {
     lines.push('  ✅ "내일까지 X 해야 해" → 자동 등록, 마감 임박 시 알림');
     lines.push('');
     /* 2) 다른 에이전트들의 능력 */
-    lines.push('*👥 회사 에이전트들 (자연어로 부르세요)*');
+    lines.push('*👥 데스크 팀원들 (자연어로 부르세요)*');
     const agentSummary: string[] = [];
-    /* YouTube 상태 */
-    try {
-        const cfgPath = path.join(getCompanyDir(), '_agents', 'youtube', 'config.md');
-        const txt = _safeReadText(cfgPath);
-        const apiKey = (txt.match(/YOUTUBE_API_KEY\s*[:：=]\s*([A-Za-z0-9_\-]+)/) || [])[1] || '';
-        const channelId = (txt.match(/YOUTUBE_CHANNEL_ID\s*[:：=]\s*([A-Za-z0-9_\-]+)/) || [])[1] || '';
-        if (apiKey && channelId) {
-            const oauth = isYoutubeOAuthConnected();
-            agentSummary.push('  📺 *YouTube* — ✅ 채널 분석·트렌드' + (oauth ? '·시청 지속률·트래픽' : ' (Analytics는 OAuth 필요)'));
-        } else {
-            agentSummary.push('  📺 *YouTube* — ⚠️ API 키·채널 ID 필요');
-        }
-    } catch {
-        agentSummary.push('  📺 *YouTube* — ⚠️ 설정 필요');
-    }
-    /* LLM 기반 에이전트들 — 항상 가능 */
-    agentSummary.push('  🎨 *디자이너* — ✅ 시안 카피·무드보드·브랜드 컬러 가이드');
-    agentSummary.push('  ✍️ *작가* — ✅ 후크·스크립트·블로그·영상 카피');
-    agentSummary.push('  🎵 *루나* — ✅ BGM 자동 생성·영상-음악 합성·사운드 디자인');
-    agentSummary.push('  💼 *현빈* — ✅ 가격·KPI·전략 분석');
-    agentSummary.push('  💻 *코다리* — ✅ 사이트·자동화·API 코드');
-    agentSummary.push('  🔍 *리서처* — ✅ 트렌드·경쟁사·사실 확인');
-    agentSummary.push('  📷 *Instagram* — ✅ 릴스 기획·해시태그·카피');
+    agentSummary.push('  📈 *레오* — ✅ 종목 선정·후보 검토·프리마켓·백테스트·개선안');
+    agentSummary.push('  ⚖️ *판정자* — ✅ 제안 판정 (근거 모순·중복 베팅만 기각)');
+    agentSummary.push('  💻 *코다리* — ✅ 승인된 개선안 코드 구현·테스트');
+    agentSummary.push('  📊 *현빈* — ✅ 사후분석·실패 패턴·샤프/MDD 관찰');
     lines.push(agentSummary.join('\n'));
     lines.push('');
+    lines.push('*📋 제안 카드 심사* (전략 변경은 여기서만)');
+    lines.push('  `/cards` 대기 목록 · `/card <id>` 상세 보기');
+    lines.push('  `/approve <id>` 승인 · `/reject <id> 사유`');
+    lines.push('  `/revise <id> 지시` 수정 요청');
+    lines.push('  _id 는 뒤 6자리만 입력해도 됩니다._');
+    lines.push('');
     lines.push('*예시:*');
-    lines.push('• "다음 영상 컨셉 5개 뽑아줘" → CEO가 YouTube·작가에게 분배');
-    lines.push('• "썸네일 시안 만들어줘" → 디자이너로');
+    lines.push('• "오늘 성과 어때?" → 현빈이 사후분석');
+    lines.push('• "개선안 뽑아줘" → 레오가 제안 카드 작성');
     lines.push('• "오늘 일정 뭐야?" → 제가 바로 답변');
     lines.push('• "에이전트 뭐 하고 있어?" → 진행 중 작업 모두');
     lines.push('');
@@ -2375,6 +2471,76 @@ function _buildDispatchStatusReport(): string {
     return lines.join('\n');
 }
 
+/* 데스크(매매) 현황 — 비서가 LLM 없이 결정적으로 답한다. "스윙 어때?" 류 질문에
+   CEO 로 떠넘기던 게 답이 안 돌아오던 원인이었다: 비서 컨텍스트에 매매 데스크
+   상태가 아예 없어서 답할 수 없었다. 현빈(15:40)·노유진(07:10)이 매일 만드는
+   보고서와 실시간 상태 파일을 직접 읽어 요약한다. 로컬 모델 품질과 무관하게 정확. */
+function _buildDeskStatusReport(): string {
+    const lines: string[] = ['📊 *매매 데스크 현황*\n'];
+    const jread = (p: string | null): any => {
+        try { return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null; } catch { return null; }
+    };
+    const lastJsonl = (p: string | null): any => {
+        try {
+            if (!p || !fs.existsSync(p)) return null;
+            const ls = fs.readFileSync(p, 'utf-8').trim().split('\n').filter(Boolean);
+            return ls.length ? JSON.parse(ls[ls.length - 1]) : null;
+        } catch { return null; }
+    };
+    const latestReview = (dir: string | null, suffix = '.md'): string => {
+        try {
+            if (!dir || !fs.existsSync(dir)) return '';
+            const fs2 = fs.readdirSync(dir).filter(n => n.endsWith(suffix)).sort();
+            if (!fs2.length) return '';
+            return fs.readFileSync(path.join(dir, fs2[fs2.length - 1]), 'utf-8').trim();
+        } catch { return ''; }
+    };
+
+    /* ── 스윙팀 ── */
+    lines.push('*🔵 스윙팀 (한국 단타)*');
+    const eq = lastJsonl(_tradingStatePath('equity_log.jsonl'));
+    const br = lastJsonl(_resolveTradingRoot() ? path.join(_resolveTradingRoot()!, 'ledger', 'shadow', 'breadth_log.jsonl') : null);
+    if (eq) {
+        lines.push(`  실계좌 ₩${Number(eq.equity_krw).toLocaleString()} · 보유 ${eq.n_positions ?? 0}종목`);
+    }
+    if (br) {
+        const pct = Math.round(Number(br.breadth) * 100);
+        lines.push(`  시장 폭 ${pct}% ${pct < 50 ? '→ 기준(50%) 밑이라 실매수 중단 중' : '→ 매수 가능'}`);
+    }
+    const sv = jread(_tradingStatePath('shadow_view.json'));
+    if (sv) {
+        const pnl = Number(sv.total_pnl_krw) || 0;
+        const sign = pnl > 0 ? '+' : '';
+        lines.push(`  섀도(가상) 보유 ${(sv.positions || []).length}종목 · 평가손익 ${sign}₩${pnl.toLocaleString()} (${sign}${sv.total_ret_pct}%)`);
+    }
+    const swReview = latestReview(_resolveTradingRoot() ? path.join(_resolveTradingRoot()!, 'ledger', 'reviews') : null);
+    if (swReview) {
+        lines.push(`  _최근 사후분석(현빈):_`);
+        lines.push(swReview.split('\n').slice(0, 8).map(l => `  ${l}`).join('\n'));
+    }
+    lines.push('');
+
+    /* ── 미장팀 ── */
+    lines.push('*🏛 미장팀 (미국 장기)*');
+    const pv = jread(_usLongtermStatePath('positions_view.json'));
+    if (pv && pv.total) {
+        lines.push(`  평가 ₩${Number(pv.total.value_krw).toLocaleString()} ($${Number(pv.total.value_usd).toLocaleString()}) · 수익률 ${pv.total.ret_pct >= 0 ? '+' : ''}${pv.total.ret_pct}%`);
+        if (typeof pv.rebalance_dday === 'number') {
+            lines.push(`  다음 리밸런싱 D-${pv.rebalance_dday} (${pv.rebalance_date})`);
+        }
+    }
+    const usReview = latestReview(_resolveUsLongtermRoot() ? path.join(_resolveUsLongtermRoot()!, 'ledger', 'reviews') : null, '_daily.md');
+    if (usReview) {
+        lines.push(`  _최근 사후분석(노유진):_`);
+        lines.push(usReview.split('\n').slice(0, 12).map(l => `  ${l}`).join('\n'));
+    }
+
+    if (!eq && !pv) {
+        return '📊 매매 데스크 상태 파일을 찾지 못했어요. 대시보드가 한 번 열려 데이터가 생성돼야 해요.';
+    }
+    return lines.join('\n');
+}
+
 async function handleTelegramViaSecretary(userText: string): Promise<void> {
     /* Mirror user's Telegram message into the sidebar chat */
     try { _activeChatProvider?.postSystemNote?.(`텔레그램: "${userText.slice(0, 200)}"`, '📱'); } catch { /* ignore */ }
@@ -2422,6 +2588,83 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
         await sendTelegramLong(status);
         _pushTelegramHistory('assistant', status.slice(0, 400));
         try { _activeChatProvider?.postSystemNote?.(`비서 → 텔레그램 (진행 상태)`, '💬'); } catch { /* ignore */ }
+        return;
+    }
+
+    /* 미장 정세 질문 → 윤가온(정리 담당)이 강해원 근거를 엮어 쉬운 말로 답한다.
+       "정세 어때?" / "강해원 뭐 분석했어?" / "엔비디아 뉴스 어때?" 류. deskQ 보다
+       먼저 둔다 — 더 구체적인 정세 질문이 일반 현황 요약보다 우선. LLM 을 거치므로
+       (~수십 초) typing 표시하고 스크립트 출력을 그대로 전달. */
+    const intelQ = /(정세|뉴스|리서치|분석|강해원|엔비디아|nvidia|tsmc|메타|반도체|amd|테마|매크로)/i;
+    const intelAsk = /(어때|어떻|왜|이유|정리|짚어|분석|말해|알려|설명|보여|긍정|부정|호재|악재)/;
+    if (intelQ.test(userText) && intelAsk.test(userText)) {
+        const usRoot = _resolveUsLongtermRoot();
+        if (usRoot) {
+            await sendTelegramReport(`🧩 *윤가온*이 강해원 정세 기록을 정리하는 중이에요… (잠깐만요)`);
+            sendTelegramTyping().catch(() => { /* ignore */ });
+            try {
+                const r = await runCommandCaptured(
+                    `${_pythonCmd()} ${JSON.stringify('scripts/run_intel_brief.py')}`,
+                    usRoot, () => { /* no stream */ }, 180000, 'stdout',
+                    { PYTHONIOENCODING: 'utf-8', INTEL_BRIEF_Q: userText });
+                const body = (r.output || '').trim();
+                if (body && !r.timedOut) {
+                    await sendTelegramLong(body);
+                    _pushTelegramHistory('assistant', body.slice(0, 400));
+                    try { _activeChatProvider?.postSystemNote?.(`윤가온 → 텔레그램 (정세 정리)`, '🧩'); } catch { /* ignore */ }
+                    return;
+                }
+                await sendTelegramReport(`🧩 윤가온: 지금 정리를 못 끝냈어요. 강해원 채점이 아직 안 됐거나 시간이 초과됐을 수 있어요.`);
+                return;
+            } catch {
+                await sendTelegramReport(`🧩 윤가온 호출에 실패했어요. 잠시 후 다시 시도해주세요.`);
+                return;
+            }
+        }
+        /* us-longterm 루트를 못 찾으면 아래 일반 경로로 흘려보냄 */
+    }
+
+    /* 스윙 전략 질문 → 윤가온이 현빈 사후분석·시장 폭·섀도를 엮어 쉬운 말로.
+       "스윙 전략 어때?" / "스윙 왜 안 사?" / "레오 뭐 골랐어?" 류. deskQ(단순 현황
+       요약)보다 먼저 — '전략/왜/어떻게'가 붙으면 단순 숫자보다 엮은 설명이 낫다. */
+    const swingStratQ = /(스윙|레오|현빈|선정|전략|폭|매수|왜.*안|종목)/;
+    const swingStratAsk = /(전략|왜|어떻게|어떤|이유|정리|짚어|설명|분석|골랐|고르|사는|안\s*사|안\s*사냐|돌아가)/;
+    if (swingStratQ.test(userText) && swingStratAsk.test(userText) && !intelQ.test(userText)) {
+        const swRoot = _resolveTradingRoot();
+        if (swRoot) {
+            await sendTelegramReport(`🧩 *윤가온*이 스윙팀 기록(현빈 분석·시장 폭·섀도)을 정리하는 중이에요…`);
+            sendTelegramTyping().catch(() => { /* ignore */ });
+            try {
+                const r = await runCommandCaptured(
+                    `${_pythonCmd()} ${JSON.stringify('scripts/run_swing_brief.py')}`,
+                    swRoot, () => { /* no stream */ }, 180000, 'stdout',
+                    { PYTHONIOENCODING: 'utf-8', SWING_BRIEF_Q: userText });
+                const body = (r.output || '').trim();
+                if (body && !r.timedOut) {
+                    await sendTelegramLong(body);
+                    _pushTelegramHistory('assistant', body.slice(0, 400));
+                    try { _activeChatProvider?.postSystemNote?.(`윤가온 → 텔레그램 (스윙 정리)`, '🧩'); } catch { /* ignore */ }
+                    return;
+                }
+                await sendTelegramReport(`🧩 윤가온: 지금 정리를 못 끝냈어요. 재료가 얕거나 시간이 초과됐을 수 있어요.`);
+                return;
+            } catch {
+                await sendTelegramReport(`🧩 윤가온 호출에 실패했어요. 잠시 후 다시 시도해주세요.`);
+                return;
+            }
+        }
+    }
+
+    /* 매매 데스크 현황 — "스윙 어때?" / "미장 수익률?" / "매매 어떻게 돼?" 류.
+       비서가 CEO 로 떠넘기면 답이 안 돌아오던 질문. 이제 현빈·노유진 보고서를
+       직접 읽어 결정적으로 답한다 (로컬 모델 안 거침). */
+    const deskQ = /(스윙|미장|섀도|쌔도|포트폴리오|매매|주식|투자|트레이딩|보유\s*종목|수익률|손익)/;
+    const deskAsk = /(어때|어떻게|어떤|얼마|현황|상태|상황|진행|잘\s*되|뭐\s*샀|보여|알려|정리|어디|몇)/;
+    if (deskQ.test(userText) && deskAsk.test(userText)) {
+        const report = _buildDeskStatusReport();
+        await sendTelegramLong(report);
+        _pushTelegramHistory('assistant', report.slice(0, 400));
+        try { _activeChatProvider?.postSystemNote?.(`비서 → 텔레그램 (데스크 현황)`, '📊'); } catch { /* ignore */ }
         return;
     }
 
@@ -2490,13 +2733,21 @@ async function handleTelegramViaSecretary(userText: string): Promise<void> {
     if (companyLog && companyLog.trim()) {
         ctxBlock += companyLog;
     }
+    /* 매매 데스크 현황 — 정규식이 못 잡은 표현으로 물어도 비서가 답할 수 있게
+       컨텍스트에 넣는다. 이게 없으면 매매 질문을 CEO 로 떠넘기고 답이 유실된다. */
+    try {
+        const desk = _buildDeskStatusReport();
+        if (desk && !desk.startsWith('📊 매매 데스크 상태 파일')) {
+            ctxBlock += `\n\n[매매 데스크 현황 — 매매/스윙/미장/수익률 질문이면 dispatch 하지 말고 이걸로 직접 답하세요(mode: reply)]\n${desk.slice(0, 1600)}`;
+        }
+    } catch { /* ignore */ }
 
     let raw = '';
     try {
         /* 800 (was 500) — calendar_create with description + location can blow
            past 500 and arrive truncated. Truncated JSON has no balanced close
            brace, defeats the parser, and leaks raw `{"mode":...` to the user. */
-        raw = await _quickLLMCall(SECRETARY_TELEGRAM_PROMPT + ctxBlock, userText, 800);
+        raw = await _quickLLMCall(SECRETARY_TELEGRAM_PROMPT + ctxBlock, userText, 800, 'secretary');
     } catch (e: any) {
         await sendTelegramReport(`⚠️ 비서가 응답하지 못했어요: ${e?.message || e}`);
         return;
@@ -2782,7 +3033,10 @@ interface ReportScheduleEntry {
     hour: number;          /* 0-23 */
     minute: number;        /* 0-59 */
     days: number[];        /* 0=일 ~ 6=토 */
-    action: 'briefing' | 'tool';
+    action: 'briefing' | 'tool' | 'codex_health';
+    /* 2026-08-07 — 알림 정책. 'always'(기본): 전문 발송. 'never': 조용히 실행만
+       (단, 실계좌 체결·🚨 급락·리밸런싱 D-day·실행실패는 항상 올림). 액션 없으면 무음. */
+    notify?: 'always' | 'never';
     tool?: string;
     agentId?: string;
     enabled: boolean;
@@ -2808,10 +3062,51 @@ function writeReportSchedule(s: { entries: ReportScheduleEntry[] }) {
     }
 }
 let _reportSchedulerTimer: NodeJS.Timeout | null = null;
+
+/** codex(레오) 인증 실태 점검 — 실제로 한 번 찔러본다.
+ *  공유계정이라 다른 사람이 로그인하면 이 토큰이 서버에서 무효화되는데, 그때
+ *  로컬 토큰 파일은 남아 `codex login status` 는 "Logged in" 이라 거짓말한다.
+ *  그래서 최소 프롬프트로 실제 호출해 401/token_invalidated 를 본다.
+ *  반환 ok=false 는 '인증 만료가 확실할 때만' — 네트워크 오류 등은 판단 보류(ok=true)해
+ *  거짓 경보를 막는다. */
+async function _checkCodexHealth(): Promise<{ ok: boolean; reason: string }> {
+    const cwd = _resolveTradingRoot() || getCompanyDir();
+    try {
+        const r = await runCommandCaptured(
+            `codex exec ${JSON.stringify('ping')}`, cwd, () => {}, 90000,
+            'both', { PYTHONIOENCODING: 'utf-8' });
+        const low = (r.output || '').toLowerCase();
+        const authDead = low.includes('token_invalidated')
+            || low.includes('authentication token has been invalidated')
+            || low.includes('401 unauthorized')
+            || low.includes('please try signing in again')
+            || low.includes('not logged in');
+        if (authDead) return { ok: false, reason: 'codex 인증 만료(로그아웃)' };
+        if (r.timedOut) return { ok: true, reason: '응답 지연 — 판단 보류' };
+        return { ok: true, reason: '정상' };
+    } catch (e: any) {
+        /* 실행 자체 실패(codex 없음 등)는 인증 문제와 구분 — 거짓 경보 안 냄 */
+        return { ok: true, reason: `점검 실패(보류): ${e?.message || e}` };
+    }
+}
+
 async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
     try {
         if (entry.action === 'briefing') {
             await _runDailyBriefingOnce(true);
+        } else if (entry.action === 'codex_health') {
+            /* 저녁 점검 — 꺼졌을 때만 영숙이 알린다. 정상이면 조용히(매일 '정상' 알림은 소음). */
+            const h = await _checkCodexHealth();
+            if (!h.ok) {
+                await sendTelegramReport(
+                    `⚠️ *영숙*: codex(선정자 레오)가 로그아웃됐어요.\n\n` +
+                    `공유계정이라 누가 새로 로그인하면서 풀린 것 같아요. ` +
+                    `내일 아침 프리마켓 전에 터미널에서 \`codex login\` 재로그인 해주세요.\n\n` +
+                    `_(재로그인 전까지 레오가 신규 진입 제안을 못 냅니다)_`);
+                try { _activeChatProvider?.postSystemNote?.(`📆 codex 점검: ❌ ${h.reason} → 영숙 알림 발송`, '⚠️'); } catch { /* ignore */ }
+            } else {
+                try { _activeChatProvider?.postSystemNote?.(`📆 codex 점검: ✅ ${h.reason}`, '📆'); } catch { /* ignore */ }
+            }
         } else if (entry.action === 'tool' && entry.tool && entry.agentId) {
             const toolDir = path.join(getCompanyDir(), '_agents', entry.agentId, 'tools');
             const scriptPath = path.join(toolDir, `${entry.tool}.py`);
@@ -2819,12 +3114,51 @@ async function _runScheduledReportEntry(entry: ReportScheduleEntry) {
                 console.warn(`[scheduler] tool not found: ${scriptPath}`);
                 return;
             }
-            const r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 120000);
+            /* PYTHONIOENCODING — 윈도우 파이썬은 콘솔 기본 인코딩(cp949)으로 찍어서
+               UTF-8로 읽는 이쪽에서 한글이 깨진다. 자식 프로세스까지 상속된다. */
+            /* 15분. 프리마켓은 KRX 유니버스 수집 + 브레인 2단계(codex→claude, 각
+               최대 5분)라 실측 2분, 최악 10분대까지 간다. 기존 120초는 정상 실행이
+               타임아웃으로 죽는 값이었다. */
+            const r = await runCommandCaptured(
+                `${_pythonCmd()} ${JSON.stringify(entry.tool + '.py')}`, toolDir, () => {}, 900000,
+                'both', { PYTHONIOENCODING: 'utf-8' },
+            );
             const out = (r.output || '').trim();
             const status = r.exitCode === 0 ? '✅' : `❌ exit ${r.exitCode}`;
-            const msg = `📆 *${entry.label}* (스케줄 자동 실행) ${status}\n\n\`\`\`\n${out.slice(0, 3000)}\n\`\`\``;
-            try { await sendTelegramLong(msg); } catch { /* silent */ }
-            try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} 자동 실행 ${status}`, '📆'); } catch { /* ignore */ }
+
+            /* 알림 정책 (2026-08-07 — 사장님: 리포트 말고 '액션·돈' 때만 연락).
+               notify: 'always'(옛 기본) | 'never'(조용) | 'on_action'(액션 있을 때만).
+               필드가 없으면 하위호환으로 'always'. */
+            const notify: string = (entry as any).notify || 'always';
+
+            /* 액션 줄만 뽑는다 — 실계좌 체결·급락 경보·리밸런싱 D-day. 이것들은
+               notify 정책과 무관하게 항상 올린다(돈·결정이 걸린 줄). 섀도(가짜돈)
+               청산은 제외 — 실제 돈이 아니라서. */
+            const lines = out.split('\n').map(l => l.trim());
+            const trades = lines.filter(l => /^(BUY|EXIT)\s*:/i.test(l));
+            const alerts = lines.filter(l =>
+                /^🚨/.test(l) || /^🔔\s*리밸런싱\s*D-/.test(l) || /매도\/VOO 검토/.test(l));
+            const actionLines = [...trades, ...alerts];
+
+            let send = false;
+            let msg = '';
+            if (actionLines.length) {
+                /* 액션 있음 → 짧게 그 줄만. 리포트 전문은 안 붙인다(사장님이 안 보고 싶어함). */
+                send = true;
+                const kind = trades.length ? '💰 *체결*' : '🔔 *확인 필요*';
+                msg = `${kind} — ${entry.label}\n${actionLines.map(t => `• ${t}`).join('\n')}`;
+            } else if (r.exitCode !== 0) {
+                /* 실패는 진단이 필요하니 조용 정책이어도 올린다 (조용히 사흘 죽는 사고 방지). */
+                send = true;
+                msg = `⚠️ *영숙* — ${entry.label} 실행 실패 (exit ${r.exitCode})\n\`\`\`\n${out.slice(0, 1500)}\n\`\`\``;
+            } else if (notify === 'always') {
+                send = true;
+                msg = `📱 *영숙* — ${entry.label} ${status}\n\n${out.slice(0, 3000)}`;
+            }
+            /* notify==='never'/'on_action' 이고 액션 없으면 send=false → 조용히 실행만. */
+
+            if (send) { try { await sendTelegramLong(msg); } catch { /* silent */ } }
+            try { _activeChatProvider?.postSystemNote?.(`📆 ${entry.label} ${status}${send ? ' → 알림' : ' (조용)'}`, '📆'); } catch { /* ignore */ }
         }
     } catch (e: any) {
         console.warn('[scheduler] entry failed:', e?.message || e);
@@ -2889,7 +3223,7 @@ function startTelegramPolling() {
                - 트래픽·배터리 절약 */
             const url = `https://api.telegram.org/bot${token}/getUpdates`;
             const res = await axios.get(url, {
-                params: { offset: _telegramPollOffset, timeout: 25, allowed_updates: JSON.stringify(['message']) },
+                params: { offset: _telegramPollOffset, timeout: 25, allowed_updates: JSON.stringify(['message', 'callback_query']) },
                 timeout: 30_000 /* 서버 timeout(25s) + 네트워크 여유 5s */
             });
             const updates = res.data?.result || [];
@@ -2899,6 +3233,24 @@ function startTelegramPolling() {
                 /* v2.89.24 — 유저 레벨 파일에도 즉시 commit. 다른 창이 다음 tick에 이걸 읽어서
                    같은 update 두 번 처리하지 않게. */
                 _writeTelegramOffset(_telegramPollOffset);
+                /* 인라인 버튼 클릭. 텔레그램은 답을 안 주면 버튼에 로딩 표시가
+                   계속 돌아서, 무엇을 하든 answerCallbackQuery 를 먼저 보낸다. */
+                const cq = u.callback_query;
+                if (cq) {
+                    const cqChat = String(cq.message?.chat?.id ?? '');
+                    try {
+                        await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`,
+                            { callback_query_id: cq.id }, { timeout: 8000 });
+                    } catch { /* 버튼 로딩만 남을 뿐 처리에는 지장 없음 */ }
+                    if (cqChat !== String(chatId)) continue; // whitelist guard
+                    const data = String(cq.data || '').trim();
+                    if (!data) continue;
+                    try { await handleTelegramCommand(data); }
+                    catch (e: any) {
+                        try { await sendTelegramReport(`⚠️ 버튼 처리 중 오류: ${e?.message || e}`); } catch {}
+                    }
+                    continue;
+                }
                 const m = u.message;
                 if (!m) continue;
                 const fromChat = String(m.chat?.id ?? '');
@@ -6670,6 +7022,13 @@ _레벨을 어떻게 골라야 할지 모르겠다면 \`2 (Draft)\`가 안전한
 function _seedAgentToolsIfMissing(agentId: string) {
   try {
     if (agentId === 'youtube') {
+      /* 2026-07-19 — 레오는 선정자(트레이딩)로 재편됨. 트레이딩 도구를 시드하고
+         콘텐츠 시절 유튜브 도구는 더 이상 새로 심지 않는다 (기존 설치에 남아
+         있는 파일은 HIDDEN_TOOLS_BY_AGENT 로 숨김 — 사용자 파일은 지우지 않음). */
+      const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
+      fs.mkdirSync(toolsDir, { recursive: true });
+      _seedSelectorTradingTools(toolsDir);
+    } else if (agentId === 'youtube__legacy_content') {
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
       _seedYouTubeAccount(toolsDir);
@@ -6690,6 +7049,7 @@ function _seedAgentToolsIfMissing(agentId: string) {
          remain), but listAgentTools hides it whenever the OAuth tool is
          present so they only see ONE calendar entry. */
       _seedSecretaryGoogleCalendarWrite(toolsDir);
+      _seedSecretaryTradingSmoke(toolsDir);
     } else if (agentId === 'editor') {
       /* v2.89.68 — 사운드/음악 에이전트 도구. ACE-Step 1.5 로컬 음악 생성 모델 사용. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
@@ -6701,16 +7061,15 @@ function _seedAgentToolsIfMissing(agentId: string) {
       /* v2.89.112+122 — 코다리 도구. 웹·모바일 셋업 + PWA + dev server + 키트 적용. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
-      _seedDeveloperWebInit(toolsDir);
-      _seedDeveloperWebPreview(toolsDir);
-      _seedDeveloperPwaSetup(toolsDir);
       _seedDeveloperPackApply(toolsDir);
       _seedDeveloperLintTest(toolsDir);
+      _seedDeveloperTradingTests(toolsDir);
     } else if (agentId === 'business') {
-      /* v2.89.121 — 비즈니스 에이전트 도구. PayPal 매출 자동 분석. */
+      /* 2026-07-19 — 현빈은 사후분석으로 재편됨. PayPal 매출 도구는 더 이상
+         시드하지 않고 (트레이딩 조직에 매출 개념이 없음) 사후분석 도구를 심는다. */
       const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
       fs.mkdirSync(toolsDir, { recursive: true });
-      _seedBusinessPaypalRevenue(toolsDir);
+      _seedAnalystTradingTools(toolsDir);
     }
   } catch { /* ignore */ }
 }
@@ -6973,6 +7332,164 @@ function _seedEditorMusicToVideo(toolsDir: string) {
   _seedFileForceUpgrade(path.join(toolsDir, 'music_to_video.py'), py, 'music_v3');
   _seedFile(path.join(toolsDir, 'music_to_video.json'), json);
   _seedFileForceUpgrade(path.join(toolsDir, 'music_to_video.md'), md, 'music_v3');
+}
+
+/* ── 2026-07-19 — 트레이딩 도구 시드 ────────────────────────────────
+   각 도구는 trading/ 의 결정적 스크립트를 그대로 실행하는 얇은 래퍼다.
+   래퍼는 아무 판단도 하지 않는다 (판단은 브레인, 차단은 게이트).
+   TRADING_DIR 은 시드 시점에 확장이 해석한 실제 경로를 기본값으로 넣고,
+   사용자가 도구 설정 폼에서 언제든 바꿀 수 있다. */
+const TRADING_TOOL_SENTINEL = 'trading_tool_v1';
+
+function _tradingToolPy(name: string, title: string, argv: string[]): string {
+  return `#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""${title} — Connect AI 트레이딩 도구 래퍼 (${TRADING_TOOL_SENTINEL})
+
+모의투자 전용. 이 래퍼는 판단하지 않고 trading/ 의 스크립트를 그대로
+실행해 출력을 그대로 보여준다. 안전층(킬스위치·일일한도·리스크 게이트)은
+스크립트 내부의 결정적 코드가 담당한다.
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# 윈도우 콘솔 기본 인코딩(cp949)에 없는 문자(em dash 등)로 print 가
+# UnicodeEncodeError 로 죽는 걸 막는다. 자식 스크립트에도 물려준다.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+HERE = Path(__file__).resolve().parent
+CONFIG = HERE / "${name}.json"
+ARGV = ${JSON.stringify(argv)}
+
+
+def _cfg(key):
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8")).get(key, "")
+    except Exception:
+        return ""
+
+
+def trading_root():
+    for src in (os.environ.get("CONNECT_AI_TRADING_DIR"), _cfg("TRADING_DIR")):
+        if src and (Path(src) / "autotrader").is_dir():
+            return Path(src)
+    return None
+
+
+def main():
+    root = trading_root()
+    if root is None:
+        print("[X] trading 폴더를 찾지 못했습니다.")
+        print("    이 도구의 설정에서 TRADING_DIR 에 trading 폴더 경로를 넣어주세요.")
+        print("    (autotrader/ 하위 폴더가 있는 그 폴더입니다)")
+        return 2
+
+    argv = list(ARGV)
+    if argv and argv[0].endswith(".py"):
+        script = root / argv[0]
+        if not script.exists():
+            print("[X] 스크립트가 없습니다: " + str(script))
+            return 2
+        argv[0] = str(script)
+
+    cmd = [sys.executable] + argv
+    # 사람이 직접 돌릴 때만 보이는 디버그 줄. 스케줄러가 파이프로 받을
+    # 때는 폰 보고에 배관 로그가 섞여서 정작 내용이 묻힌다.
+    if sys.stdout.isatty():
+        print("[>] " + " ".join(cmd))
+        print("[>] cwd = " + str(root))
+        print("-" * 60)
+    env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return subprocess.call(cmd, cwd=str(root), env=env)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`;
+}
+
+function _seedTradingTool(
+  toolsDir: string,
+  name: string,
+  title: string,
+  argv: string[],
+  mdBody: string,
+) {
+  const py = _tradingToolPy(name, title, argv);
+  const json = JSON.stringify({
+    TRADING_DIR: _resolveTradingRoot() || '',
+    _schema: {
+      TRADING_DIR: {
+        type: 'text',
+        label: '📁 trading 폴더 경로',
+        hint: 'autotrader/ 가 들어있는 폴더. 비우면 CONNECT_AI_TRADING_DIR 환경변수를 씁니다.',
+      },
+    },
+  }, null, 2);
+  const md = `# ${title}\n\n${mdBody}\n`;
+  _seedFileForceUpgrade(path.join(toolsDir, `${name}.py`), py, TRADING_TOOL_SENTINEL);
+  _mergeSchemaIntoJson(path.join(toolsDir, `${name}.json`), json);
+  _seedFileForceUpgrade(path.join(toolsDir, `${name}.md`), md, TRADING_TOOL_SENTINEL);
+}
+
+/** 레오(선정자) — 후보 선정·백테스트·개선 카드 생성 */
+function _seedSelectorTradingTools(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'premarket_run', '📈 장 시작 전 실행',
+    ['scripts/run_premarket.py'],
+    `스크리너로 유니버스를 랭킹하고 브레인 판단 → 게이트 통과분만 모의 주문을 냅니다. (${TRADING_TOOL_SENTINEL})
+
+- 평일 장 시작 전 1회 실행하세요. 주말·휴장일엔 KIS 모의서버가 주문을 받지 않습니다.
+- 모의투자 전용입니다. 실거래 API는 연결돼 있지 않습니다.
+- 게이트에서 전부 기각돼 0건 주문으로 끝나는 것도 정상입니다.`);
+
+  _seedTradingTool(toolsDir, 'backtest_run', '🧪 백테스트',
+    ['scripts/run_backtest.py'],
+    `과거 구간으로 전략을 재현합니다. 슬리피지·수수료가 반영된 결과만 신뢰하세요. (${TRADING_TOOL_SENTINEL})
+
+결과는 trading/state/backtest_*.json 으로 저장되고 성과판의 실패 패턴·변경 전후 비교 표에 반영됩니다.`);
+
+  _seedTradingTool(toolsDir, 'improve_run', '💡 개선 카드 생성',
+    ['scripts/run_improve.py'],
+    `진단 결과에서 변경 제안 카드를 만들어 심사 대기 큐에 넣습니다. (${TRADING_TOOL_SENTINEL})
+
+카드는 제안일 뿐입니다 — 승인 후 코다리가 구현하고, 게이트·전체 테스트를 다시 통과해야 반영됩니다.`);
+}
+
+/** 현빈(사후분석) — 마감 후 회고 */
+function _seedAnalystTradingTools(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'postmarket_review', '📊 마감 후 사후분석',
+    ['scripts/run_postmarket.py', '--review'],
+    `당일 체결·손익을 집계하고 실패 패턴을 정리합니다. (${TRADING_TOOL_SENTINEL})
+
+주문 지시는 하지 않습니다 — 관찰과 개선 재료만 만듭니다.
+gate_status.json·equity_log.jsonl 이 여기서 갱신되며, 커맨드 센터의 일일 한도 소진율이 채워집니다.`);
+}
+
+/** 코다리(코드) — 안전층 회귀 테스트 */
+function _seedDeveloperTradingTests(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'trading_tests', '✅ 트레이딩 전체 테스트',
+    ['-m', 'pytest', '-q'],
+    `킬스위치·일일 손실 한도·리스크/컴플라이언스 게이트·스키마 검증을 포함한 전체 테스트를 돌립니다. (${TRADING_TOOL_SENTINEL})
+
+코드 변경을 "완료"라고 보고하기 전에 반드시 여기 출력으로 뒷받침하세요. 실패가 하나라도 있으면 미검증입니다.`);
+}
+
+/** 영숙(비서) — 실행 전 준비 점검 */
+function _seedSecretaryTradingSmoke(toolsDir: string) {
+  _seedTradingTool(toolsDir, 'kis_smoke', '🔌 KIS 모의서버 연결 점검',
+    ['scripts/smoke_kis.py'],
+    `KIS 모의투자 서버에 토큰이 발급되고 시세가 조회되는지 확인합니다. (${TRADING_TOOL_SENTINEL})
+
+장 시작 전 실행 전에 먼저 돌려보세요. 판단은 하지 않고 연결 가능 여부만 보고합니다.`);
 }
 
 function _seedFile(p: string, content: string) {
@@ -7390,6 +7907,12 @@ async function prefetchAgentRealtimeData(agentId: string): Promise<string> {
   if (agentId === 'business') {
     candidates.push({ tool: 'paypal_revenue.py', label: 'PayPal 매출 분석 (게임·프로젝트별, 실제 거래 데이터)' });
   }
+  /* 비서 prefetch — 영숙에겐 trading/state 를 읽을 도구가 없어서 "오늘 매매했어?"
+     질문에 "기록 없음"을 사실처럼 지어내는 사고가 실제로 났다. 답하기 전에
+     실제 파일을 읽어 프롬프트에 넣는다. */
+  if (agentId === 'secretary') {
+    candidates.push({ tool: 'trading_status.py', label: '매매 현황 (trading/state 실제 파일)' });
+  }
   if (candidates.length === 0) return '';
   const toolsDir = path.join(getCompanyDir(), '_agents', agentId, 'tools');
   if (!fs.existsSync(toolsDir)) return '';
@@ -7402,7 +7925,7 @@ async function prefetchAgentRealtimeData(agentId: string): Promise<string> {
     if (gotRealData) break;
     try {
       const r = await new Promise<{ exitCode: number; output: string; timedOut: boolean }>((resolve) => {
-        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(c.tool)}`, toolsDir, () => { /* silent */ }, 90000)
+        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(c.tool)}`, toolsDir, () => { /* silent */ }, 90000, 'both', { PYTHONIOENCODING: 'utf-8' })
           .then(resolve)
           .catch(() => resolve({ exitCode: -1, output: '', timedOut: false }));
       });
@@ -7574,6 +8097,502 @@ OS 차이: 백그라운드 프로세스는 맥/리눅스에선 \`nohup ... &\`, 
 // On any conflict / auth failure, surface a friendly message
 // and let the user resolve it via the manual sync menu.
 // ============================================================
+/* ── 트레이딩 게이트 상태 (trading/state/gate_status.json — Python 엔진이 생성) ──
+   리스크&포지션 커맨드 센터의 데이터 소스. 파일 없음/손상 시 null (표시만 비움). */
+type TradingGateStatus = {
+    date: string;
+    killswitch_engaged: boolean;
+    killswitch_reason: string;
+    daily_blocked: boolean;
+    daily_limit_used_pct: number | null;
+    gate_rejections_today: number;
+};
+/* 2026-07-19 — trading 폴더 위치 해석.
+   기존 코드는 `<workspace>/trading` 하나만 봤는데 실제 프로젝트는
+   `<workspace>/connect-ai/trading` 에 있어서 커맨드 센터·성과판이 전부
+   빈 값으로 렌더되고 있었다. 후보를 순서대로 확인하고 첫 번째 실재 폴더를
+   쓴다. 설정(connectAiLab.tradingDir)이 있으면 그게 최우선. */
+function _resolveTradingRoot(): string | null {
+    const candidates: string[] = [];
+    try {
+        const cfg = vscode.workspace.getConfiguration('connectAiLab').get<string>('tradingDir');
+        if (cfg && cfg.trim()) candidates.push(cfg.trim());
+    } catch { /* 설정 없음 */ }
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        const r = f.uri.fsPath;
+        candidates.push(path.join(r, 'trading'));
+        candidates.push(path.join(r, 'connect-ai', 'trading'));
+    }
+    /* 확장에 번들된 사본 — 워크스페이스가 트레이딩 저장소가 아닐 때의 최후 수단 */
+    if (_dashboardExtensionUri) candidates.push(path.join(_dashboardExtensionUri.fsPath, 'trading'));
+    for (const c of candidates) {
+        try { if (fs.existsSync(path.join(c, 'autotrader'))) return c; } catch { /* 다음 후보 */ }
+    }
+    return null;
+}
+
+/** trading/state/<file> 절대 경로. trading 폴더를 못 찾으면 null. */
+function _tradingStatePath(file: string): string | null {
+    const root = _resolveTradingRoot();
+    return root ? path.join(root, 'state', file) : null;
+}
+
+/** 미장팀(us-longterm) 루트 해석 — trading 과 동일 패턴, 마커는 longcore/. */
+function _resolveUsLongtermRoot(): string | null {
+    const candidates: string[] = [];
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        const r = f.uri.fsPath;
+        candidates.push(path.join(r, 'us-longterm'));
+        candidates.push(path.join(r, 'connect-ai', 'us-longterm'));
+    }
+    if (_dashboardExtensionUri) candidates.push(path.join(_dashboardExtensionUri.fsPath, 'us-longterm'));
+    for (const c of candidates) {
+        try { if (fs.existsSync(path.join(c, 'longcore'))) return c; } catch { /* 다음 후보 */ }
+    }
+    return null;
+}
+function _usLongtermStatePath(file: string): string | null {
+    const root = _resolveUsLongtermRoot();
+    return root ? path.join(root, 'state', file) : null;
+}
+
+function _readTradingGateStatus(): TradingGateStatus | null {
+    try {
+        const p = _tradingStatePath('gate_status.json');
+        if (!p || !fs.existsSync(p)) return null;
+        return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch { return null; }
+}
+
+function _tradingGateCardHtml(): string {
+    /* 히어로 = 일일손실한도 소진율 + 킬스위치 상태 (매출 아님 — 스펙 UI 재구성).
+       기존 revenue-card의 엘리먼트 id를 유지해 dashboard.js와의 호환을 지킨다. */
+    const gs = _readTradingGateStatus();
+    const ks = gs?.killswitch_engaged === true;
+    const used = (gs && gs.daily_limit_used_pct !== null && gs.daily_limit_used_pct !== undefined)
+        ? `${Math.round(gs.daily_limit_used_pct * 100)}%` : '—';
+    const rej = gs ? String(gs.gate_rejections_today) : '—';
+    const sub = !gs
+        ? 'trading/state/gate_status.json 없음 — postmarket 실행 후 표시됩니다'
+        : ks
+            ? `🛑 킬스위치 ON — ${gs.killswitch_reason || '수동 정지'}`
+            : gs.daily_blocked
+                ? '⛔ 일일 손실 한도 도달 — 오늘 매매 차단 (다음 거래일 자동 해제)'
+                : `모의투자 정상 운용 · 기준일 ${gs.date}`;
+    return `<!-- 트레이딩 커맨드 센터 — 매출 카드 대체 (v2.89.142 자리) -->
+  <section class="card span-12 revenue-card" id="revenueCard" data-trading="1">
+    <div class="rev-glyph-rain" aria-hidden="true"></div>
+    <div class="rev-inner">
+      <div class="rev-left">
+        <div class="rev-eyebrow">RISK &amp; POSITION COMMAND CENTER · <span class="rev-live"><span class="rev-pulse"></span> PAPER</span></div>
+        <div class="rev-title">🛡️ 리스크&amp;포지션 커맨드 센터</div>
+        <div class="rev-sub" id="revSubtitle">${sub}</div>
+      </div>
+      <div class="rev-kpis" id="revKpis">
+        <div class="rev-kpi"><div class="rev-kpi-l">일일 한도 소진율</div><div class="rev-kpi-v" id="revMonth">${used}</div></div>
+        <div class="rev-kpi"><div class="rev-kpi-l">킬스위치</div><div class="rev-kpi-v" id="revWeek">${ks ? 'ON' : 'OFF'}</div></div>
+        <div class="rev-kpi"><div class="rev-kpi-l">오늘 게이트 거부</div><div class="rev-kpi-v" id="revCount">${rej}</div></div>
+      </div>
+      <div class="rev-spark">
+        <svg id="revSparkSvg" viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="rev-actions">
+        <button class="rev-btn primary" id="openRevDashBtn">
+          <span class="rev-btn-glow"></span>
+          <span>리스크조정 성과판</span>
+          <span class="rev-btn-arrow">→</span>
+        </button>
+        <button class="rev-btn ghost" id="askHyunbinBtn" title="마감 후 사후분석 리포트 의뢰">🧠 사후분석 의뢰</button>
+      </div>
+    </div>
+  </section>`;
+}
+
+/** 스윙팀 섀도 포트폴리오 — 페이퍼(주문 0). state/shadow_state·shadow_view(실시간
+ *  평가) + ledger/shadow/shadow_trades.jsonl(청산 내역) 읽기 전용. 미장 보유 스타일. */
+function _swingShadowCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
+    const sg = (n: number) => n > 0 ? '+' : '';
+    const root = _resolveTradingRoot();
+    let openRows = '', closedRows = '', pendRows = '', realized = 0, openN = 0, closedN = 0, pendN = 0, liveHdr = '';
+    try {
+        // 실시간 평가 (watch_shadow_live 가 쓴 것) 우선, 없으면 진입 데이터만
+        let view: any = null;
+        const vp = _tradingStatePath('shadow_view.json');
+        if (vp && fs.existsSync(vp)) { try { view = JSON.parse(fs.readFileSync(vp, 'utf-8')); } catch { /* skip */ } }
+        const sp = _tradingStatePath('shadow_state.json');
+        const state = (sp && fs.existsSync(sp)) ? JSON.parse(fs.readFileSync(sp, 'utf-8')) : { positions: {} };
+
+        const posList = view?.positions || Object.entries<any>(state.positions || {}).map(([symbol, p]: any) => ({ symbol, ...p, value_krw: null }));
+        for (const p of posList) {
+            openN++;
+            const live = (typeof p.value_krw === 'number') ? p.value_krw : null;
+            const pnl = (typeof p.pnl_krw === 'number') ? p.pnl_krw : null;
+            const ret = (typeof p.ret_pct === 'number') ? p.ret_pct : null;
+            /* 브로커 앱처럼 — 1주당 매입가 vs 현재가, 매입금액 vs 평가금액을 다 보여준다. */
+            const cost = (typeof p.cost_krw === 'number') ? p.cost_krw : Number(p.qty) * Number(p.entry_price);
+            const cur = (typeof p.price === 'number') ? p.price : null;
+            openRows += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.12);font-size:12px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-weight:700">${esc(p.name || p.symbol)} <span style="opacity:.4;font-weight:400;font-size:11px">${esc(p.symbol)}</span></span>
+                ${live !== null ? `<span style="font-weight:600">평가 ₩${Number(live).toLocaleString()}</span>` : ''}</div>
+              <div style="display:flex;justify-content:space-between;margin-top:3px">
+                <span style="opacity:.7">${Number(p.qty).toLocaleString()}주 · 매입 ${Number(p.entry_price).toLocaleString()}원${cur !== null ? ` → 현재 <b>${Number(cur).toLocaleString()}원</b>` : ''}</span>
+                ${pnl !== null ? `<span style="color:${col(pnl)};font-weight:600">${sg(pnl)}${Number(pnl).toLocaleString()} (${sg(ret || 0)}${ret}%)</span>` : `<span style="opacity:.5">${esc(p.entry_date)} 진입</span>`}</div>
+              <div style="display:flex;justify-content:space-between;opacity:.5;margin-top:2px;font-size:11px">
+                <span>매입금액 ₩${Number(cost).toLocaleString()}</span>
+                <span>손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span></div></div>`;
+        }
+        // 청산 내역 (ledger)
+        if (root) {
+            const tp = path.join(root, 'ledger', 'shadow', 'shadow_trades.jsonl');
+            if (fs.existsSync(tp)) {
+                const exits = fs.readFileSync(tp, 'utf-8').trim().split('\n')
+                    .filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } })
+                    .filter((r: any) => r && r.event === 'exit');
+                closedN = exits.length;
+                for (const e of exits.slice(-6).reverse()) {
+                    realized += Number(e.realized_krw) || 0;
+                    const reason = { stop: '손절', target: '목표', time: '기간' }[e.reason as string] || e.reason;
+                    closedRows += `<div style="padding:5px 0;font-size:12px;border-bottom:1px solid rgba(128,128,128,.08)">
+                      <div style="display:flex;justify-content:space-between">
+                        <span><span style="font-weight:600">${esc(e.name || e.symbol)}</span> <span style="opacity:.5">${esc(reason)}</span></span>
+                        <span style="color:${col(e.realized_krw)};font-weight:600">${sg(e.ret_pct)}${e.ret_pct}% · ${sg(e.realized_krw)}₩${Number(e.realized_krw).toLocaleString()}</span></div>
+                      <div style="opacity:.5;font-size:11px;margin-top:1px">${Number(e.entry_price).toLocaleString()}원 → ${Number(e.exit_price).toLocaleString()}원 · ${Number(e.qty).toLocaleString()}주 · ${Number(e.hold_days)}일 보유</div></div>`;
+                }
+                realized = exits.reduce((a: number, e: any) => a + (Number(e.realized_krw) || 0), 0);
+            }
+        }
+        if (view) {
+            /* 종가 스냅샷은 찍은 시각이 아니라 '종가'로 적는다 — 15:50 에 찍어도 값은 15:30 종가다. */
+            const stamp = view.session === '종가'
+                ? `${esc(String(view.updated).slice(5, 10))} 종가`
+                : `${esc(view.updated)} 갱신`;
+            liveHdr = `평가 ₩${Number(view.total_value_krw).toLocaleString()} · <span style="color:${col(view.total_pnl_krw)}">평가손익 ${sg(view.total_pnl_krw)}₩${Number(view.total_pnl_krw).toLocaleString()} (${sg(view.total_ret_pct)}${view.total_ret_pct}%)</span> · ${stamp}`;
+        }
+        /* 대기 주문 — 지정가를 냈지만 아직 체결 판정 전. 이걸 안 보여주면
+           아침에 5건을 골라도 마감 판정(15:45) 전까지 카드가 텅 빈 것처럼 보인다.
+           지정가만 보여주면 체결까지 얼마나 남았는지 알 수 없어 현재가·거리도 같이.
+           체결 규칙이 '그날 저가 ≤ 지정가' 라, 봐야 할 값은 현재가가 지정가보다
+           얼마나 위에 있느냐다. */
+        const pendList = (view?.pending && view.pending.length) ? view.pending : (state.pending || []);
+        for (const o of pendList) {
+            pendN++;
+            const cur = (typeof o.price === 'number') ? o.price : null;
+            const gap = (typeof o.gap_pct === 'number') ? o.gap_pct : null;
+            const reach = gap !== null && gap <= 0;
+            const tag = cur === null
+                ? '<span style="opacity:.45">시세 대기</span>'
+                : reach
+                    ? '<span style="color:#22c55e;font-weight:600">체결권 도달</span>'
+                    : `<span style="opacity:.7">${gap!.toFixed(2)}% 더 내려와야</span>`;
+            pendRows += `<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.08);font-size:12px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-weight:600;opacity:.85">${esc(o.name || o.symbol)}${o.rank ? `<span style="opacity:.4;font-weight:400;font-size:11px"> ${esc(o.rank)}등</span>` : ''}</span>
+                ${tag}</div>
+              <div style="display:flex;justify-content:space-between;opacity:.6;margin-top:2px;font-size:11px">
+                <span>${Number(o.qty).toLocaleString()}주 · 지정가 ${Number(o.limit_price).toLocaleString()}원</span>
+                ${cur !== null ? `<span>현재 <b>${Number(cur).toLocaleString()}원</b></span>` : ''}</div></div>`;
+        }
+    } catch { /* 표시 전용 */ }
+    const pendBlock = pendRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 그날 저가가 지정가에 닿아야 체결 (판정은 마감 후)</div>${pendRows}</div>` : '';
+    const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
+    const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
+    return `<section class="card span-7" id="swingShadowCard">
+    <div class="card-head"><div class="card-title"><span class="title-icon">🌓</span> 스윙팀 섀도 포트폴리오 (페이퍼)</div>
+    <span class="badge">보유 ${openN}${pendN ? ` · 대기 ${pendN}` : ''}</span></div>
+    <div style="font-size:11px;opacity:.6;margin-bottom:6px">주문 0 · 판정자 통과분을 실매매처럼 추적 · 실현손익 <span style="color:${col(realized)}">${sg(realized)}₩${Number(realized).toLocaleString()}</span> (청산 ${closedN}건)</div>
+    ${liveHdr ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px">${liveHdr}</div>` : ''}
+    <div>${openBlock}</div>
+    ${pendBlock}
+    ${closedBlock}
+  </section>`;
+}
+
+/** 스윙팀 오늘의 선정 — trading/state/premarket_log.jsonl 읽기 전용.
+ *  시장 폭 게이트·2슬롯·최근 이력을 시각화. "왜 매매 안해?"를 카드로 답한다.
+ *  trading/ 코드 무접촉 (state 파일만 읽음). */
+function _swingSelectionCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    let recs: any[] = [];
+    try {
+        const p = _tradingStatePath('premarket_log.jsonl');
+        if (p && fs.existsSync(p)) {
+            const byDate: Record<string, any> = {};
+            for (const ln of fs.readFileSync(p, 'utf-8').trim().split('\n')) {
+                if (!ln.trim()) continue;
+                try { const r = JSON.parse(ln); if (r.date) byDate[r.date] = r; } catch { /* skip */ }
+            }
+            recs = Object.values(byDate).sort((a: any, b: any) => a.date < b.date ? 1 : -1);
+        }
+    } catch { /* 표시 전용 */ }
+    const breadthOf = (r: any): number | null => {
+        for (const s of (r?.skipped || [])) { const m = String(s).match(/폭\s*(\d+)%/); if (m) return parseInt(m[1], 10); }
+        return null;
+    };
+    const kind = (r: any) => {
+        if (!r) return { t: '미실행', c: '#667788' };
+        if (r.blocked) return { t: '차단', c: '#e5484d' };
+        if ((r.buys_placed || []).length) return { t: '진입', c: '#22c55e' };
+        const b = breadthOf(r); if (b !== null && b < 50) return { t: '폭차단', c: '#f59e0b' };
+        return { t: '관망', c: '#94a3b8' };
+    };
+    const today = recs[0];
+    const k = kind(today);
+    const b = today ? breadthOf(today) : null;
+    let statusLine = '프리마켓 미실행 (오늘 08:30 예약)';
+    if (today) {
+        if (today.blocked) statusLine = `전체 차단 · ${esc(today.blocked)}`;
+        else if ((today.buys_placed || []).length) statusLine = `진입 ${today.buys_placed.length}종목`;
+        else if (b !== null && b < 50) statusLine = `시장 폭 ${b}% &lt; 50% · 신규 진입 차단 (C2)`;
+        else statusLine = '관망 (게이트 통과, 진입 0종목)';
+    }
+    const buys: string[] = (today?.buys_placed) || [];
+    const blocked = (b !== null && b < 50) || !!today?.blocked;
+    const slots = [0, 1].map(i => {
+        if (buys[i]) return `<div style="flex:1;padding:8px;border-radius:8px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.35);font-size:12px;font-weight:600">${esc(buys[i])}</div>`;
+        return `<div style="flex:1;padding:8px;border-radius:8px;background:rgba(128,128,128,.06);border:1px dashed rgba(128,128,128,.25);font-size:12px;opacity:.5;text-align:center">${blocked ? '차단' : '빈 슬롯'}</div>`;
+    }).join('');
+    let gauge = '';
+    if (b !== null) {
+        const open = b >= 50; const col = open ? '#22c55e' : '#f59e0b';
+        gauge = `<div style="margin:12px 0 4px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-bottom:3px"><span>시장 폭</span><span>${b}% ${open ? '(진입 가능)' : '&lt; 50% 차단'}</span></div>
+          <div style="position:relative;height:8px;background:rgba(128,128,128,.15);border-radius:4px">
+            <div style="position:absolute;left:0;top:0;height:8px;width:${Math.min(100, b)}%;background:${col};border-radius:4px"></div>
+            <div style="position:absolute;left:50%;top:-3px;height:14px;width:2px;background:#e5484d" title="문턱 50%"></div>
+          </div></div>`;
+    }
+    const strip = recs.slice(0, 14).reverse().map((r: any) => {
+        const kk = kind(r); const md = String(r.date).slice(5).replace('-', '/');
+        return `<div title="${esc(r.date)} · ${kk.t}" style="flex:1;min-width:0;text-align:center">
+          <div style="height:18px;border-radius:3px;background:${kk.c};opacity:.85"></div>
+          <div style="font-size:9px;opacity:.4;margin-top:2px">${md}</div></div>`;
+    }).join('');
+    const stripBlock = strip ? `<div style="margin-top:14px"><div style="font-size:11px;opacity:.55;margin-bottom:5px">최근 이력 (녹색 진입 · 주황 폭차단 · 빨강 차단 · 회색 관망)</div><div style="display:flex;gap:3px">${strip}</div></div>` : '';
+    return `<section class="card span-7" id="swingSelectionCard">
+    <div class="card-head"><div class="card-title"><span class="title-icon">🎯</span> 스윙팀 오늘의 선정</div>
+    <span class="badge" style="background:${k.c}22;color:${k.c}">${k.t}</span></div>
+    <div style="font-size:13px;margin-bottom:2px">${statusLine}</div>
+    <div style="font-size:11px;opacity:.5">일 신규 진입 상한 2종목${today ? ' · ' + esc(today.date) + ' 기준' : ''}</div>
+    ${gauge}
+    <div style="display:flex;gap:8px;margin-top:10px">${slots}</div>
+    ${stripBlock}
+  </section>`;
+}
+
+function _tradingProposalsCardHtml(): string {
+    /* 변경 제안 큐 (trading/state/proposals/pending/*.json — Python 큐가 생성).
+       조회 전용 — 승인/거부는 큐 CLI 또는 에이전트 지시로 수행 (유일한 승인 지점). */
+    let items = '';
+    let count = 0;
+    try {
+        const dir = _tradingStatePath(path.join('proposals', 'pending'));
+        {
+            if (dir && fs.existsSync(dir)) {
+                for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json')).sort()) {
+                    const card = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+                    const esc = (s: string) => String(s || '')
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const short = String(card.id).slice(-6);
+                    const title = card.title?.trim()
+                        || String(card.proposal || '').split('\n')[0].slice(0, 70);
+                    /* 변경 범위는 diff 에서 직접 센다 — 모델 주장이 아니라 사실이다. */
+                    const diff = String(card.diff || '');
+                    const files = diff.split('\n').filter(l => l.startsWith('diff --git'))
+                        .map(l => l.split(' b/').pop() || '');
+                    const added = diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+                    const removed = diff.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+                    const hasTests = files.some(x => x.includes('/tests/'));
+                    const sect = (label: string, v: string) => v?.trim()
+                        ? `<div style="margin-top:6px"><div style="font-size:11px;opacity:.6">${label}</div>
+                           <div style="font-size:12px;line-height:1.5">${esc(v).slice(0, 400)}</div></div>` : '';
+                    items += `<div class="prop-card" data-card="${short}" style="padding:10px;margin:8px 0;border:1px solid rgba(128,128,128,.25);border-radius:8px">
+                      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+                        <div style="font-weight:600">${esc(title)}</div>
+                        <code style="font-size:11px;opacity:.6">${short}</code>
+                      </div>
+                      ${sect('무엇이 문제인가', card.diagnosis)}
+                      ${sect('승인하지 않으면', card.risk)}
+                      ${sect('승인했을 때의 단점', card.tradeoff)}
+                      <div style="margin-top:8px;font-size:11px;opacity:.75">
+                        ${files.length}개 파일 · +${added}/-${removed}줄 ·
+                        ${hasTests ? '테스트 포함' : '<span style="color:#e0a800">테스트 없음</span>'}
+                      </div>
+                      <textarea class="prop-reason" rows="2" placeholder="사유·수정 지시 (거부·수정 요청 시 필수)"
+                        style="width:100%;margin-top:8px;font-size:12px;padding:6px;box-sizing:border-box"></textarea>
+                      <div style="display:flex;gap:6px;margin-top:6px">
+                        <button class="prop-btn" data-act="approve" data-card="${short}">✅ 승인</button>
+                        <button class="prop-btn" data-act="reject" data-card="${short}">❌ 거부</button>
+                        <button class="prop-btn" data-act="revise" data-card="${short}">✏️ 수정 요청</button>
+                      </div>
+                    </div>`;
+                    count++;
+                }
+            }
+        }
+    } catch { /* 조회 실패 시 빈 카드 — 표시 전용이므로 무해 */ }
+    const body = items || '<div class="empty subtle">심사 대기 카드 없음 — run_improve.py로 생성됩니다.</div>';
+    return `<section class="card span-5" id="tradingProposalsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">🗂️</span> 변경 제안 큐 (트레이딩)</div>
+      <span class="badge warn">${count}</span>
+    </div>
+    <div>${body}</div>
+    <div style="opacity:.6;font-size:11px;margin-top:6px">승인/거부/수정지시는 카드 ID로 에이전트에게 지시 — 승인 시 게이트·전체 테스트 재통과 후에만 반영</div>
+  </section>`;
+}
+
+function _tradingPositionsCardHtml(): string {
+    /* 라이브 포지션 메타 (trading/state/holdings.json — 수량은 KIS 잔고 기준이라 별도). */
+    let rows = '';
+    let count = 0;
+    try {
+        const p = _tradingStatePath('holdings.json');
+        {
+            if (p && fs.existsSync(p)) {
+                const metas = JSON.parse(fs.readFileSync(p, 'utf-8'));
+                for (const [sym, m] of Object.entries<any>(metas)) {
+                    rows += `<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:12px">
+                      <span style="font-weight:600">${sym}</span>
+                      <span>손절 ${Number(m.stop_price).toLocaleString()}</span>
+                      <span>목표 ${Number(m.target_price).toLocaleString()}</span>
+                      <span style="opacity:.7">${m.entry_date} 진입 · ${m.horizon_days}일</span></div>`;
+                    count++;
+                }
+            }
+        }
+    } catch { /* 표시 전용 */ }
+    const body = rows || '<div class="empty subtle">보유 포지션 없음 (premarket 실행 후 갱신)</div>';
+    return `<section class="card span-7" id="tradingPositionsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">📈</span> 스윙팀 보유 (모의)</div>
+      <span class="badge">${count}</span>
+    </div>
+    <div>${body}</div>
+  </section>`;
+}
+
+/** 종목별 일별 평가금액 곡선 → 인라인 SVG 스파크라인. 점 2개 미만이면 빈 문자열.
+ *  한국 관례: 상승=빨강, 하락=파랑 (마지막 vs 처음). */
+function _usSparkline(vals: number[]): string {
+    if (!Array.isArray(vals) || vals.length < 2) return '';
+    const w = 76, h = 22, pad = 2;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const range = (max - min) || 1;
+    const pts = vals.map((v, i) => {
+        const x = pad + (i / (vals.length - 1)) * (w - 2 * pad);
+        const y = pad + (1 - (v - min) / range) * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const up = vals[vals.length - 1] >= vals[0];
+    const color = up ? '#e5484d' : '#3b82f6';   // 빨강 상승 / 파랑 하락
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex-shrink:0">
+      <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
+/** 미장팀(us-longterm) 보유 — 브로커 앱 스타일. run_daily 가 쓴
+ *  positions_view.json(평가금액·손익·손익률·매입) + positions_history.json(그래프).
+ *  표시 전용, 100% 모의. 미실행 시 폴백. */
+function _usLongtermPositionsCardHtml(): string {
+    const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+    const SLEEVE: Record<string, string> = { VOO: 'ETF', NVDA: '성장주', TSM: '성장주', META: '성장주' };
+    // 한국 관례: 이익=빨강, 손실=파랑
+    const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
+    const sign = (n: number) => n > 0 ? '+' : '';
+    let count = 0;
+    let header = '';
+    let rows = '';
+    let ddayBanner = '';
+    try {
+        const vp = _usLongtermStatePath('positions_view.json');
+        if (vp && fs.existsSync(vp)) {
+            const v = JSON.parse(fs.readFileSync(vp, 'utf-8'));
+            // 그래프 history (종목별 곡선)
+            let hist: any = null;
+            const hp = _usLongtermStatePath('positions_history.json');
+            if (hp && fs.existsSync(hp)) { try { hist = JSON.parse(fs.readFileSync(hp, 'utf-8')); } catch { /* skip */ } }
+
+            for (const p of (v.positions || [])) {
+                count++;
+                const spark = hist && hist.series ? _usSparkline(hist.series[p.ticker]) : '';
+                rows += `<div style="padding:8px 0;border-bottom:1px solid rgba(128,128,128,.15)">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+                    <span><span style="font-weight:700">${esc(p.ticker)}</span> <span style="opacity:.5;font-size:11px">${esc(SLEEVE[p.ticker] || '')}</span></span>
+                    <span style="font-weight:600">₩${Number(p.value_krw).toLocaleString()}</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:3px;font-size:12px">
+                    <span style="opacity:.6">${Number(p.shares).toFixed(3)}주 · 매입 ₩${Number(p.cost_krw).toLocaleString()}</span>
+                    ${spark}
+                    <span style="color:${col(p.pnl_krw)};font-weight:600;text-align:right;min-width:96px">${sign(p.pnl_krw)}₩${Number(p.pnl_krw).toLocaleString()}<br><span style="font-size:11px">${sign(p.ret_pct)}${Number(p.ret_pct).toFixed(2)}%</span></span>
+                  </div>
+                </div>`;
+            }
+            if (typeof v.cash_usd === 'number') {
+                rows += `<div style="display:flex;justify-content:space-between;padding:8px 0;font-size:12px;opacity:.75">
+                  <span style="font-weight:600">현금 (USD)</span>
+                  <span>₩${Number(v.cash_krw).toLocaleString()} <span style="opacity:.6">($${Number(v.cash_usd).toFixed(2)})</span></span></div>`;
+            }
+            const t = v.total || {};
+            header = `평가 ₩${Number(t.value_krw).toLocaleString()} · <span style="color:${col(t.pnl_usd)}">평가손익 ${sign(t.pnl_usd)}$${Number(t.pnl_usd).toFixed(2)} (${sign(t.ret_pct)}${Number(t.ret_pct).toFixed(2)}%)</span><br><span style="opacity:.6">${v.session === '장중' ? `${esc(v.updated || v.asof)} 장중` : `${esc(v.asof)} 종가`} 기준 · 환율 ${Number(v.usdkrw).toLocaleString()}${v.session === '장중' ? '' : ' · 미국장 마감 중'}</span>`;
+            /* 분기 점검일 D-7 카운트다운. 리밸런싱은 자동이 아니라 사람이 여는 절차라
+               '언제인지 몰라 놓치는' 게 실제 실패 모드다. 창 밖이면 아무것도 안 그린다. */
+            if (v.rebalance_notice) {
+                const dd = Number(v.rebalance_dday);
+                const urgent = dd <= 2;
+                ddayBanner = `<div style="margin:8px 0;padding:7px 10px;border-radius:6px;font-size:11px;font-weight:600;background:${urgent ? 'rgba(229,72,77,.13)' : 'rgba(245,158,11,.12)'};border:1px solid ${urgent ? 'rgba(229,72,77,.35)' : 'rgba(245,158,11,.3)'}">
+                  &#128276; 리밸런싱 <b>D-${dd}</b> &middot; ${esc(v.rebalance_date)} 분기 점검일
+                  <div style="opacity:.7;font-weight:400;margin-top:2px">밴드 이탈 확인 &rarr; 논지 재판정 &rarr; 실행은 승인 후</div></div>`;
+            }
+        } else {
+            // 폴백: positions_view 없으면 수량만 (run_daily 미실행)
+            const hp = _usLongtermStatePath('holdings.json');
+            if (hp && fs.existsSync(hp)) {
+                const data = JSON.parse(fs.readFileSync(hp, 'utf-8'));
+                for (const b of Object.values<any>(data)) {
+                    for (const [sym, pos] of Object.entries<any>(b.positions || {})) {
+                        count++;
+                        rows += `<div style="display:flex;gap:12px;padding:6px 0;font-size:12px"><span style="font-weight:600;min-width:48px">${esc(sym)}</span><span>${Number(pos.shares).toFixed(3)}주</span></div>`;
+                    }
+                }
+                header = '평가금액은 <code>run_daily.py</code> 실행 후 표시됩니다';
+            }
+        }
+    } catch { /* 표시 전용 */ }
+    const body = rows || '<div class="empty subtle">미초기화 — run_rebalance.py --init 후 표시</div>';
+    return `<section class="card span-5" id="usLongtermPositionsCard">
+    <div class="card-head">
+      <div class="card-title"><span class="title-icon">🏛️</span> 미장팀 보유 (모의)</div>
+      <span class="badge">${count}</span>
+    </div>
+    ${header ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px;line-height:1.6">${header}</div>` : ''}
+    ${ddayBanner}
+    <div>${body}</div>
+  </section>`;
+}
+
+/* ── 절대규칙 4: 트레이딩 크레덴셜 push 방지 가드 ─────────────────────
+   자동 git 동기화가 스테이징한 파일에 트레이딩 비밀/상태가 섞여 있으면
+   커밋·푸시 전에 스테이징을 전부 해제하고 동기화를 중단한다. 100% 결정적. */
+const _TRADING_SECRET_PATTERNS = [
+    /(^|\/)\.env(\..*)?$/i,      // .env, .env.local 등
+    /(^|\/)trading\//i,           // 트레이딩 엔진 폴더 전체
+    /appkey|appsecret/i,          // KIS 키 파일명 패턴
+];
+function _abortSyncIfSecretsStaged(dir: string, notify: (m: string, d?: number) => void): boolean {
+    const staged = gitExecSafe(['diff', '--cached', '--name-only'], dir) || '';
+    const hit = staged.split('\n').map(s => s.trim()).filter(Boolean)
+        .find(f => _TRADING_SECRET_PATTERNS.some(re => re.test(f)));
+    if (!hit) return false;
+    gitExecSafe(['reset'], dir); // 스테이징 전체 해제 — 아무것도 커밋되지 않음
+    notify(`🛑 **[GitHub Sync 중단]** 트레이딩 비밀/상태 파일(${hit})이 감지되어 자동 동기화를 차단했습니다. (절대규칙 4)`);
+    return true;
+}
+
 async function _safeGitAutoSync(brainDir: string, commitMsg: string, provider: any = null) {
     if (_autoSyncRunning) return; // dedup: another auto-sync (or manual sync) is already running
     _autoSyncRunning = true;
@@ -7614,6 +8633,7 @@ async function _safeGitAutoSync(brainDir: string, commitMsg: string, provider: a
 
         // Stage + commit any new local work. "nothing to commit" is fine.
         gitExecSafe(['add', '.'], brainDir);
+        if (_abortSyncIfSecretsStaged(brainDir, notify)) return;
         gitExecSafe(['commit', '-m', commitMsg], brainDir);
 
         // No remote configured → try to pull from settings, otherwise stay local.
@@ -7720,6 +8740,7 @@ async function _safeGitAutoSyncCompany(commitMsg: string, provider: any = null) 
         ensureBrainGitignore(companyDir); // same boilerplate ignore is fine here
         ensureInitialCommit(companyDir);
         gitExecSafe(['add', '.'], companyDir);
+        if (_abortSyncIfSecretsStaged(companyDir, notify)) return;
         gitExecSafe(['commit', '-m', commitMsg], companyDir);
         const existingRemote = gitExecSafe(['remote', 'get-url', 'origin'], companyDir)?.trim() || '';
         if (!existingRemote) {
@@ -10730,6 +11751,8 @@ class CompanyDashboardPanel {
     private readonly _panel: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
     private _refreshTimer: NodeJS.Timeout | null = null;
+    private _shadowTimer: NodeJS.Timeout | null = null;
+    private _shadowCloseDate = '';      // 종가 스냅샷을 찍은 날 (하루 1회 보장)
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.ViewColumn.Active;
@@ -11092,6 +12115,33 @@ class CompanyDashboardPanel {
                     } catch (e: any) {
                         this._postToast(`⚠️ 자가검증 모드 변경 실패: ${e?.message || e}`, true);
                     }
+                } else if (msg?.type === 'proposalAction' && typeof msg.card === 'string') {
+                    /* 변경 제안 카드 심사 — 유일한 승인 지점. CLI 를 그대로
+                       부른다. 게이트(금지구역·diff 적용·전체 테스트·실패 시
+                       롤백)는 Python 쪽 한 곳에만 두고, UI 는 입구일 뿐이다. */
+                    const act = String(msg.action || '');
+                    const reason = String(msg.reason || '').trim();
+                    if (!['approve', 'reject', 'revise'].includes(act)) { return; }
+                    if ((act === 'reject' || act === 'revise') && !reason) {
+                        this._postToast('⚠️ 사유·수정 지시를 적어주세요', true);
+                        return;
+                    }
+                    const root = _resolveTradingRoot();
+                    if (!root) { this._postToast('⚠️ trading 폴더를 찾지 못했어요', true); return; }
+                    this._postToast(act === 'approve'
+                        ? `⏳ ${msg.card} 승인 게이트 실행 중 (전체 테스트까지 최대 15분)`
+                        : `${msg.card} 처리 중…`);
+                    const argv = ['scripts/run_proposals.py', act, msg.card, ...(reason ? [reason] : [])];
+                    runCommandCaptured(
+                        `${_pythonCmd()} ${argv.map(a => JSON.stringify(a)).join(' ')}`,
+                        root, () => {}, 900000, 'both', { PYTHONIOENCODING: 'utf-8' },
+                    ).then(r => {
+                        const out = (r.output || '').trim();
+                        const ok = /상태: approved/.test(out) || (act !== 'approve' && r.exitCode === 0);
+                        this._postToast(`${ok ? '✅' : '❌'} ${out.split('\n').filter(Boolean).pop() || '(출력 없음)'}`.slice(0, 200), !ok);
+                        sendTelegramLong(`📋 *제안 카드* — ${act} \`${msg.card}\`\n\n${out.slice(0, 2500)}`).catch(() => {});
+                        this._sendState();  // 큐에서 빠졌으니 카드 목록 갱신
+                    }).catch((e: any) => this._postToast(`⚠️ 실행 실패: ${e?.message || e}`, true));
                 } else if (msg?.type === 'openAgentFolder' && typeof msg.agentId === 'string') {
                     /* v2.87.6 — 대시보드 팀 카드 클릭 → 에이전트 폴더 OS 탐색기에서
                        열기. _agents/<id>/ 안에 지식·스킬·메모리·세션 다 있어서
@@ -11119,9 +12169,55 @@ class CompanyDashboardPanel {
         /* Periodic light refresh for time-based UI (countdowns) and remote state. */
         this._refreshTimer = setInterval(() => this._sendState().catch(() => {}), 30 * 1000);
         this._sendState().catch(() => { /* ignore boot */ });
+
+        /* 섀도 평가 15분 갱신 — 한국장 중 백그라운드로 준실시간 시세를 받아
+           shadow_view.json 갱신 후 카드만 다시 그린다 (깜빡임 없음, 전체 재렌더 X). */
+        this._shadowTimer = setInterval(() => this._refreshShadowCard(), 15 * 60 * 1000);
+        setTimeout(() => this._refreshShadowCard(), 8000);   // 패널 열고 8초 뒤 1회
     }
 
     public refresh() { this._sendState().catch(() => {}); }
+
+    /** 섀도 카드만 갱신 — 한국장 중이면 시세 받아 shadow_view.json 쓰고, 카드 HTML 재전송. */
+    private _refreshShadowCard(): void {
+        const now = new Date();
+        const day = now.getDay();          // 0=일 6=토
+        const mins = now.getHours() * 60 + now.getMinutes();
+        const weekday = day >= 1 && day <= 5;
+        const krMarketOpen = weekday && mins >= 9 * 60 && mins <= 15 * 60 + 30;
+        /* 종가 스냅샷 — 15분 타이머는 패널 연 시각 기준이라 마지막 장중 틱이 15:15~15:30
+           아무데나 떨어진다. 그대로 두면 카드가 종가가 아니라 그 시각 가격에서 멈춘다
+           (실제로 15:24 에 멈춰 있었다). 마감 후 하루 한 번 종가로 덮어쓴다.
+           15:50 이후인 이유 — 시세가 약 15분 지연이라 그 전엔 15:30 종가가 아직 안 온다. */
+        const today = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+        const needClose = weekday && mins >= 15 * 60 + 50 && this._shadowCloseDate !== today;
+        const post = () => {
+            try { this._panel.webview.postMessage({ type: 'swingShadowHtml', html: _swingShadowCardHtml() }); } catch { /* ignore */ }
+        };
+        const root = _resolveTradingRoot();
+        if ((krMarketOpen || needClose) && root) {
+            if (needClose) this._shadowCloseDate = today;   // 재시도 폭주 방지 — 실패해도 다음 날 다시
+            /* 준실시간 시세 갱신을 백그라운드로 (yfinance 조회 몇 초). 끝나면 카드 재전송. */
+            const args = needClose ? ' --close' : '';
+            runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_shadow_refresh.py')}${args}`,
+                root, () => {}, 60000, 'both', { PYTHONIOENCODING: 'utf-8' })
+                .then(() => post()).catch(() => post());
+        } else {
+            post();   // 장 마감 중엔 시세 갱신 없이 카드만 재전송 (보유·청산 변화 반영)
+        }
+        this._refreshUsLongtermCard();
+    }
+
+    /** 미장팀 카드 갱신 — 표시 전용 스크립트만 돌린다 (nav_log·ledger 무접촉).
+     *  미국장은 한국시간 밤이라 낮에는 최신 종가를, 밤에는 준실시간을 보여준다. */
+    private _refreshUsLongtermCard(): void {
+        const root = _resolveUsLongtermRoot();
+        if (!root) { return; }
+        runCommandCaptured(`${_pythonCmd()} ${JSON.stringify('scripts/run_view_refresh.py')} --live`,
+            root, () => {}, 90000, 'both', { PYTHONIOENCODING: 'utf-8' })
+            .then(() => { try { this._panel.webview.postMessage({ type: 'usLongtermHtml', html: _usLongtermPositionsCardHtml() }); } catch { /* ignore */ } })
+            .catch(() => { /* 표시 전용 — 실패해도 조용히 */ });
+    }
 
     private _postToast(text: string, err = false) {
         try { this._panel.webview.postMessage({ type: 'toast', text, err }); } catch { /* ignore */ }
@@ -11218,13 +12314,20 @@ class CompanyDashboardPanel {
                    화면엔 "한 번 클릭으로 끝나는" 도구만 노출. 고급 분석(경쟁
                    채널 비교, 트렌드 스나이퍼 등)은 별도 섹션 또는 미래 빌드에서.
                    숨겨진 도구도 폴더엔 그대로 있어서 직접 실행은 가능함. */
+                /* 2026-07-19 — 트레이딩 조직 재편. 콘텐츠 시절 도구는 전부 숨긴다.
+                   기존 설치의 파일은 지우지 않고(사용자 데이터) 목록에서만 제외 —
+                   폴더를 직접 열면 그대로 있고 수동 실행도 가능하다. */
                 const HIDDEN_TOOLS_BY_AGENT: Record<string, string[]> = {
                     youtube: [
-                        'youtube_account',     /* 설정 허브 — 외부 연결 패널과 중복 */
-                        'competitor_brief',    /* COMPETITOR_CHANNELS 추가 입력 필요 — 고급 */
-                        'trend_sniper',        /* WATCHED_CHANNELS 추가 입력 필요 — 고급 */
-                        'comment_harvester',   /* WATCHED_CHANNELS 추가 입력 필요 — 고급 */
-                        'telegram_notify',     /* 인프라 — 다른 도구가 자동 사용 */
+                        'youtube_account', 'competitor_brief', 'trend_sniper',
+                        'comment_harvester', 'telegram_notify', 'auto_planner',
+                        'channel_full_analysis', 'my_videos_check',
+                    ],
+                    business: [
+                        'paypal_revenue',      /* 트레이딩 조직엔 매출 개념이 없음 */
+                    ],
+                    developer: [
+                        'web_init', 'web_preview', 'pwa_setup',  /* 콘텐츠 시절 웹 셋업 */
                     ],
                     secretary: [
                         'telegram_setup',      /* 외부 연결 패널과 중복 */
@@ -11291,6 +12394,11 @@ class CompanyDashboardPanel {
                 color: a.color,
                 specialty: a.specialty,
                 tagline: a.tagline || '',
+                mission: a.mission || '',
+                /* 2026-07-20 — 소속 데스크. 대시보드가 팀별로 묶어 렌더한다.
+                   스윙팀(한국 스윙)과 미장팀(미국 장기)은 원리가 다른 조직이라
+                   한 줄에 섞어 놓으면 누가 어느 팀인지 알 수 없다. */
+                desk: a.desk || 'shared',
                 openTasks: myTasks.length,
                 autonomy: lvl,
                 autonomyLabel: AUTONOMY_LABELS[lvl] || 'Off',
@@ -11423,6 +12531,7 @@ class CompanyDashboardPanel {
     private _dispose() {
         CompanyDashboardPanel.current = null;
         if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
+        if (this._shadowTimer) { clearInterval(this._shadowTimer); this._shadowTimer = null; }
         while (this._disposables.length) {
             const d = this._disposables.pop();
             try { d?.dispose(); } catch {}
@@ -11486,34 +12595,7 @@ class CompanyDashboardPanel {
     <div class="team-grid" id="teamBody"></div>
   </section>
 
-  <!-- v2.89.142 — 매출 카드. 회사 대시보드 메인 진입점.
-       클릭하면 풀 매출 대시보드 패널 (매트릭스 풍) 열림. -->
-  <section class="card span-12 revenue-card" id="revenueCard">
-    <div class="rev-glyph-rain" aria-hidden="true"></div>
-    <div class="rev-inner">
-      <div class="rev-left">
-        <div class="rev-eyebrow">REVENUE COMMAND CENTER · <span class="rev-live"><span class="rev-pulse"></span> LIVE</span></div>
-        <div class="rev-title">💰 매출 컨트롤 센터</div>
-        <div class="rev-sub" id="revSubtitle">PayPal 연결을 확인하는 중…</div>
-      </div>
-      <div class="rev-kpis" id="revKpis">
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">이번 달</div><div class="rev-kpi-v" id="revMonth">—</div></div>
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">7일</div><div class="rev-kpi-v" id="revWeek">—</div></div>
-        <div class="rev-kpi rev-skeleton"><div class="rev-kpi-l">거래</div><div class="rev-kpi-v" id="revCount">—</div></div>
-      </div>
-      <div class="rev-spark">
-        <svg id="revSparkSvg" viewBox="0 0 280 60" preserveAspectRatio="none"></svg>
-      </div>
-      <div class="rev-actions">
-        <button class="rev-btn primary" id="openRevDashBtn">
-          <span class="rev-btn-glow"></span>
-          <span>풀스크린 매출 대시보드</span>
-          <span class="rev-btn-arrow">→</span>
-        </button>
-        <button class="rev-btn ghost" id="askHyunbinBtn" title="현빈 에이전트에게 매출 분석 요청">🧠 현빈에게 분석 의뢰</button>
-      </div>
-    </div>
-  </section>
+  ${_tradingGateCardHtml()}
 
   <!-- 2) 오늘의 일 — open tasks (left) + approvals (right). Compact. -->
   <section class="card span-7" id="tasksCard">
@@ -11531,6 +12613,16 @@ class CompanyDashboardPanel {
     </div>
     <div id="aprBody"><div class="empty subtle">대기 중인 승인이 없어요.</div></div>
   </section>
+
+  ${_tradingPositionsCardHtml()}
+
+  ${_usLongtermPositionsCardHtml()}
+
+  ${_swingSelectionCardHtml()}
+
+  ${_swingShadowCardHtml()}
+
+  ${_tradingProposalsCardHtml()}
 
   <!-- 3) YouTube + Analytics — only when API key configured. -->
   <section class="card span-7 yt-cond" id="ytCard" style="display:none">
@@ -12266,6 +13358,74 @@ class RevenueDashboardPanel {
     }
 
     private _html(): string {
+        /* 2026-07-19 — 리스크조정 성과판으로 개편 (스펙 UI 재구성).
+           서버 렌더링: trading/state/* 파일을 패널 열 때 읽는다.
+           revenue-dashboard.js는 PayPal 전용이라 제거 (덮어쓰기 방지). */
+        const tradingRoot = _resolveTradingRoot();
+        const st = (f: string) => tradingRoot ? path.join(tradingRoot, 'state', f) : path.join(' missing', f);
+        const esc = (x: any) => String(x).replace(/</g, '&lt;');
+
+        // 1) 자산곡선 (equity_log.jsonl)
+        let eq: { date: string; equity_krw: number; daily_return_bp: number | null }[] = [];
+        try {
+            if (fs.existsSync(st('equity_log.jsonl'))) {
+                eq = fs.readFileSync(st('equity_log.jsonl'), 'utf-8').split('\n')
+                    .filter(Boolean).map(l => JSON.parse(l));
+            }
+        } catch { /* 표시 전용 */ }
+        const cur = eq.length ? eq[eq.length - 1].equity_krw : null;
+        const first = eq.length ? eq[0].equity_krw : null;
+        const cumPct = (cur && first) ? ((cur / first - 1) * 100).toFixed(2) : null;
+        let peak = 0, mdd = 0;
+        for (const e of eq) { peak = Math.max(peak, e.equity_krw); if (peak > 0) mdd = Math.max(mdd, (peak - e.equity_krw) / peak); }
+        let spark = '';
+        if (eq.length >= 2) {
+            const vals = eq.map(e => e.equity_krw);
+            const lo = Math.min(...vals), hi = Math.max(...vals), rng = Math.max(hi - lo, 1);
+            spark = vals.map((v, i) =>
+                `${(i / (vals.length - 1) * 800).toFixed(1)},${(150 - (v - lo) / rng * 140).toFixed(1)}`
+            ).join(' ');
+        }
+
+        // 2) 게이트 상태
+        const gs = _readTradingGateStatus();
+        const used = (gs && gs.daily_limit_used_pct != null) ? Math.round(gs.daily_limit_used_pct * 100) + '%' : '—';
+
+        // 3) 실패 패턴 (최신 backtest_*.json의 trade_log)
+        let failRows = '';
+        try {
+            const dir = st('');
+            const bt = fs.readdirSync(dir).filter(f => /^backtest_\d{8}_\d{8}\.json$/.test(f)).sort().pop();
+            if (bt) {
+                const d = JSON.parse(fs.readFileSync(path.join(dir, bt), 'utf-8'));
+                const log: any[] = d.trade_log || [];
+                for (const kind of ['stop', 'target', 'time']) {
+                    const rows = log.filter(t => t.exit_kind === kind);
+                    if (!rows.length) continue;
+                    const wins = rows.filter(t => t.pnl_krw > 0).length;
+                    const avg = rows.reduce((a, t) => a + t.pnl_pct, 0) / rows.length;
+                    failRows += `<tr><td>${kind}</td><td>${rows.length}</td><td>${Math.round(wins / rows.length * 100)}%</td><td>${(avg * 100).toFixed(2)}%</td></tr>`;
+                }
+                failRows = `<div style="opacity:.6;font-size:11px;margin-bottom:4px">${esc(bt)}</div>
+                  <table style="width:100%;font-size:12px;text-align:right"><tr style="opacity:.6"><th style="text-align:left">청산</th><th>건수</th><th>승률</th><th>평균</th></tr>${failRows}</table>`;
+            }
+        } catch { /* 표시 전용 */ }
+
+        // 4) 변경 전후 비교 (최신 backtest_compare_*.json)
+        let cmpRows = '';
+        try {
+            const dir = st('');
+            const cf = fs.readdirSync(dir).filter(f => f.startsWith('backtest_compare_')).sort().pop();
+            if (cf) {
+                const d = JSON.parse(fs.readFileSync(path.join(dir, cf), 'utf-8'));
+                for (const [k, v] of Object.entries<any>(d)) {
+                    cmpRows += `<tr><td style="text-align:left">${esc(k)}</td><td>${(v.ret * 100).toFixed(1)}%</td><td>${(v.mdd * 100).toFixed(1)}%</td><td>${v.sharpe.toFixed(2)}</td></tr>`;
+                }
+                cmpRows = `<div style="opacity:.6;font-size:11px;margin-bottom:4px">${esc(cf)}</div>
+                  <table style="width:100%;font-size:12px;text-align:right"><tr style="opacity:.6"><th style="text-align:left">변형|구간</th><th>수익률</th><th>MDD</th><th>샤프</th></tr>${cmpRows}</table>`;
+            }
+        } catch { /* 표시 전용 */ }
+
         return `<!doctype html><html><head><meta charset="utf-8">
 <style>${_loadWebviewAsset('revenue-dashboard.css')}</style>
 </head><body>
@@ -12273,97 +13433,67 @@ class RevenueDashboardPanel {
 
 <div class="wrap">
   <header class="hero">
-    <div class="hero-mark">💰</div>
+    <div class="hero-mark">🛡️</div>
     <div class="hero-info">
-      <div class="eyebrow">CONNECT AI · REVENUE COMMAND CENTER</div>
-      <h1>매출 대시보드</h1>
-      <div class="hero-sub">
-        PayPal 거래 실시간 분석 · 게임별 매출 분해 · <span class="live">LIVE</span>
-        <span style="margin-left: 8px; color: var(--text-3); font-size: 0.8rem;" id="generated"></span>
+      <div class="eyebrow">CONNECT AI · RISK-ADJUSTED PERFORMANCE</div>
+      <h1>리스크조정 성과판</h1>
+      <div class="hero-sub">모의투자 관찰 지표 · 절대수익은 목표가 아니라 결과 · <span class="live">PAPER</span>
+        <span style="margin-left:8px;color:var(--text-3);font-size:0.8rem">패널을 다시 열면 갱신됩니다</span>
       </div>
-    </div>
-    <div class="hero-actions">
-      <button class="btn" id="refreshBtn">🔄 새로고침</button>
-      <button class="btn" id="settingsBtn">⚙️ 설정</button>
     </div>
   </header>
 
-  <div id="emptyArea" class="hidden"></div>
-
-  <!-- KPI strip -->
   <div class="kpi-strip">
     <div class="kpi today">
-      <div class="kpi-label">오늘 매출</div>
-      <div class="kpi-value" id="kpiToday" data-last="0">0.00</div>
-      <div class="kpi-unit"><span id="curLabel">USD</span></div>
+      <div class="kpi-label">총평가 (모의)</div>
+      <div class="kpi-value">${cur != null ? cur.toLocaleString() : '—'}</div>
+      <div class="kpi-unit">KRW${cumPct != null ? ` · 누적 ${cumPct}%` : ''}</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">지난 7일</div>
-      <div class="kpi-value" id="kpiWeek" data-last="0">0.00</div>
-      <div class="kpi-unit">7-day rolling</div>
+      <div class="kpi-label">관찰 MDD (운용)</div>
+      <div class="kpi-value">${eq.length ? (mdd * 100).toFixed(1) + '%' : '—'}</div>
+      <div class="kpi-unit">equity_log 기준</div>
     </div>
     <div class="kpi month">
-      <div class="kpi-label">이번 달 (30일)</div>
-      <div class="kpi-value" id="kpiMonth" data-last="0">0.00</div>
-      <div class="kpi-sub" id="kpiMonthSub">—</div>
+      <div class="kpi-label">일일 한도 소진율</div>
+      <div class="kpi-value">${used}</div>
+      <div class="kpi-sub">한도 -3% 대비</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">순매출 / 거래수</div>
-      <div class="kpi-value" id="kpiNet" data-last="0">0.00</div>
-      <div class="kpi-unit"><span id="kpiCount" data-last="0">0</span>건</div>
+      <div class="kpi-label">킬스위치 / 오늘 거부</div>
+      <div class="kpi-value">${gs ? (gs.killswitch_engaged ? 'ON' : 'OFF') : '—'}</div>
+      <div class="kpi-unit">${gs ? gs.gate_rejections_today + '건 거부' : 'postmarket 후 표시'}</div>
     </div>
   </div>
 
-  <!-- Sparkline + Donut row -->
   <div class="row">
     <div class="card">
       <div class="section">
-        <h2>30일 일별 매출 추이</h2>
+        <h2>자산곡선 (마감 스냅샷)</h2>
         <div class="spark-wrap">
-          <svg class="spark-svg" id="sparkSvg" viewBox="0 0 800 160" preserveAspectRatio="none"></svg>
+          ${spark
+            ? `<svg class="spark-svg" viewBox="0 0 800 160" preserveAspectRatio="none"><polyline points="${spark}" fill="none" stroke="#22d3ee" stroke-width="2"/></svg>`
+            : `<div style="opacity:.6;padding:24px">기록 없음 — run_postmarket.py 실행이 쌓이면 그려집니다 (${eq.length}일)</div>`}
         </div>
       </div>
     </div>
     <div class="card">
       <div class="section">
-        <h2>프로젝트 구성</h2>
-        <div class="donut-wrap">
-          <div class="donut-rel">
-            <svg class="donut-svg" id="donutSvg" viewBox="0 0 200 200"></svg>
-            <div class="donut-center">
-              <div class="label">Total</div>
-              <div class="val" id="donutCenterVal" data-last="0">0</div>
-            </div>
-          </div>
-          <div class="donut-legend" id="donutLegend"></div>
-        </div>
+        <h2>실패 패턴 (백테스트 청산 사유별)</h2>
+        ${failRows || '<div style="opacity:.6;padding:24px">backtest_*.json 없음 — run_backtest.py 실행 후 표시</div>'}
       </div>
     </div>
   </div>
 
-  <!-- Project bars + Transaction feed -->
   <div class="row" style="margin-top: 20px;">
     <div class="card">
       <div class="section">
-        <h2>프로젝트별 상세</h2>
-        <div id="projBars"></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section">
-        <h2>최근 거래</h2>
-        <div class="feed" id="feed">
-          <div class="skeleton" style="height: 60px; margin-bottom: 10px;"></div>
-          <div class="skeleton" style="height: 60px; margin-bottom: 10px;"></div>
-          <div class="skeleton" style="height: 60px;"></div>
-        </div>
+        <h2>변경 전후 비교 (V0 vs 채택 후보)</h2>
+        ${cmpRows || '<div style="opacity:.6;padding:24px">backtest_compare_*.json 없음 — run_backtest.py --compare 실행 후 표시</div>'}
       </div>
     </div>
   </div>
 </div>
-
-<div class="burst" id="burst"></div>
-<script>${_loadWebviewAsset('revenue-dashboard.js')}</script>
 </body></html>`;
     }
 }
@@ -13920,8 +15050,8 @@ body.dispatching .beams{opacity:1}
   <div class="fr-head">
     <div class="fr-icon">💰</div>
     <div class="fr-title">
-      <div class="fr-eyebrow">REVENUE · <span class="fr-live"><span class="fr-pulse"></span>LIVE</span></div>
-      <div class="fr-name">매출 컨트롤 센터</div>
+      <div class="fr-eyebrow">GATE STATUS · <span class="fr-live"><span class="fr-pulse"></span>PAPER</span></div>
+      <div class="fr-name">게이트 상태판</div>
     </div>
     <button class="fr-close" id="frClose" title="숨기기">✕</button>
   </div>
@@ -14248,6 +15378,9 @@ function showBubbleOn(agentId, text, ms){
 
 /* ==== Auto-walking + idle chat ==== */
 let autoWalkActive = false;
+/* v2.89.158 — 여러 명이 동시에 움직이므로, 이미 이동 중인 에이전트를
+   다른 액션이 또 집어가지 않도록 점유 표시. 해제는 항상 finally 에서. */
+const busyAgents = new Set();
 const IDLE_CHATS = [
   '커피 한잔?', '오늘 진도 어때?', '아 그거 봤어?', '점심 뭐 먹지', '와 대박',
   '확인해볼게', '체크', '오케이', '굿', '음...', '잠깐만', '나중에 얘기하자'
@@ -14558,6 +15691,7 @@ async function idleChatStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length < 2) return;
@@ -14572,17 +15706,22 @@ async function idleChatStep(){
   const aHomeY = parseFloat(deskEls[A.id].dataset.homeY);
   const ax = bx + (aHomeX > bx ? 7 : -7);
   const ay = by + (aHomeY > by ? 5 : -5);
-  showStatusIcon(A.id, '💬', 4500);
-  await walkToward(A.id, ax, ay, 1100);
-  showBubbleOn(A.id, pickRandom(IDLE_CHATS), 1800);
-  logActivity(A.emoji, A.id, '<strong>'+A.name+'</strong> → '+B.emoji+' '+B.name+' (잡담)');
-  await new Promise(r => setTimeout(r, 1400));
-  if (Math.random() < 0.7) {
-    showStatusIcon(B.id, '💬', 2500);
-    showBubbleOn(B.id, pickRandom(IDLE_CHATS), 1800);
+  busyAgents.add(A.id);
+  try {
+    showStatusIcon(A.id, '💬', 4500);
+    await walkToward(A.id, ax, ay, 1100);
+    showBubbleOn(A.id, pickRandom(IDLE_CHATS), 1800);
+    logActivity(A.emoji, A.id, '<strong>'+A.name+'</strong> → '+B.emoji+' '+B.name+' (잡담)');
     await new Promise(r => setTimeout(r, 1400));
+    if (Math.random() < 0.7) {
+      showStatusIcon(B.id, '💬', 2500);
+      showBubbleOn(B.id, pickRandom(IDLE_CHATS), 1800);
+      await new Promise(r => setTimeout(r, 1400));
+    }
+    await walkToward(A.id, aHomeX, aHomeY, 1100);
+  } finally {
+    busyAgents.delete(A.id);
   }
-  await walkToward(A.id, aHomeX, aHomeY, 1100);
 }
 
 /* Visit a location, idle there, return — Smallville routine */
@@ -14590,6 +15729,7 @@ async function visitLocationStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length === 0) return;
@@ -14601,15 +15741,21 @@ async function visitLocationStep(){
   const aHomeY = parseFloat(deskEls[A.id].dataset.homeY);
   /* offset so multiple agents at same location don't perfectly overlap */
   const offX = (Math.random() - 0.5) * 5;
-  showStatusIcon(A.id, loc.emoji, loc.stay + 2400);
-  logActivity(loc.emoji, A.id, '<strong>'+A.name+'</strong> → '+loc.label);
-  /* mark location active */
+  busyAgents.add(A.id);
   const locEl = document.querySelector('[data-loc="'+locId+'"]');
-  if (locEl) locEl.classList.add('active');
-  await walkToward(A.id, loc.x + offX, loc.y, 1300);
-  await new Promise(r => setTimeout(r, loc.stay));
-  if (locEl) locEl.classList.remove('active');
-  await walkToward(A.id, aHomeX, aHomeY, 1300);
+  try {
+    showStatusIcon(A.id, loc.emoji, loc.stay + 2400);
+    logActivity(loc.emoji, A.id, '<strong>'+A.name+'</strong> → '+loc.label);
+    /* mark location active */
+    if (locEl) locEl.classList.add('active');
+    await walkToward(A.id, loc.x + offX, loc.y, 1300);
+    await new Promise(r => setTimeout(r, loc.stay));
+    if (locEl) locEl.classList.remove('active');
+    await walkToward(A.id, aHomeX, aHomeY, 1300);
+  } finally {
+    if (locEl) locEl.classList.remove('active');
+    busyAgents.delete(A.id);
+  }
 }
 
 /* Think alone at desk — generate a personality thought */
@@ -14617,6 +15763,7 @@ async function thinkStep(){
   if (!autoWalkActive) return;
   const idleAgents = agents.filter(a => {
     const el = deskEls[a.id];
+    if (busyAgents.has(a.id)) return false;
     return el && (el.classList.contains('idle') || el.classList.contains('done'));
   });
   if (idleAgents.length === 0) return;
@@ -14639,14 +15786,26 @@ function startAutoWalk(){
   if (autoWalkActive) return;
   autoWalkActive = true;
   logActivity('🚶','ceo','자율 모드 ON — 에이전트들이 일과를 시작합니다.');
-  const tick = async () => {
+  /* v2.89.158 — 예전엔 14~32초에 딱 한 명만 움직여서 대부분의 시간엔
+     전원이 정지해 보였다. 이제 매 틱마다 1~3명이 "동시에" 각자 행동한다.
+     await 하지 않고 띄우는 게 핵심 — 액션 길이(잡담 ~5s, 장소방문 ~9s)가
+     서로 달라서 await 하면 제일 느린 놈이 전체 리듬을 잡아먹는다.
+     busyAgents 가 같은 에이전트 중복 선택을 막아준다. */
+  const tick = () => {
     if (!autoWalkActive) return;
-    try { await autonomousAct(); } catch {}
-    /* 14~32초 사이 랜덤 간격 — 더 활발하게 */
-    const next = 14000 + Math.floor(Math.random() * 18000);
+    const actors = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < actors; i++) {
+      /* 동시 출발이 아니라 0~1.2초 흩어서 — 로봇처럼 각 잡혀 보이지 않게 */
+      setTimeout(() => {
+        if (!autoWalkActive) return;
+        autonomousAct().catch(() => {});
+      }, Math.floor(Math.random() * 1200));
+    }
+    /* 4~9초 간격 — 항상 누군가는 움직이는 상태 유지 */
+    const next = 4000 + Math.floor(Math.random() * 5000);
     setTimeout(tick, next);
   };
-  setTimeout(tick, 6000);
+  setTimeout(tick, 1500);
 }
 function stopAutoWalk(){
   autoWalkActive = false;
@@ -15004,15 +16163,18 @@ function applyWorkdayState(on, opts){
       ? '🟢 ON — 1인 기업 에이전트들이 15분마다 미션을 향해 자동으로 한 스텝씩 일합니다. 자리 비워도, 일반 채팅 모드여도 계속 일해요. 클릭하면 끔.'
       : '⚫ OFF — 자동 사이클 중단. 사용자가 직접 명령할 때만 동작. 클릭하면 다시 켬.';
   }
+  /* v2.89.158 — 걷기/잡담 애니메이션은 이 토글에서 분리했다. 이건 순수 연출이라
+     토큰을 한 푼도 안 쓰는데, 토큰을 쓰는 24시간 자동 사이클과 한 스위치에
+     묶여 있어서 "사무실을 열었는데 아무도 안 움직인다"가 기본 상태였다.
+     이제 걷기는 officeInit 에서 항상 시작하고, 이 토글은 실제로 LLM 을 굴리는
+     자동 사이클(chatter)만 제어한다. */
   if (_workdayOn) {
-    try { startAutoWalk(); } catch {}
     startChatterAutofire();
     /* Click-to-enable should give instant feedback; first-time init shouldn't. */
     if (opts && opts.fireImmediate) {
       try { vscode.postMessage({ type: 'runChatter' }); } catch {}
     }
   } else {
-    try { stopAutoWalk(); } catch {}
     stopChatterAutofire();
   }
 }
@@ -15331,6 +16493,8 @@ window.addEventListener('message', e => {
          Fallback to 'true' only when the host genuinely didn't send a value. */
       const initialWorkdayOn = (typeof m.workdayOn === 'boolean') ? m.workdayOn : true;
       applyWorkdayState(initialWorkdayOn, { fireImmediate: false });
+      /* 걷기는 토글과 무관하게 항상 ON — 사무실을 연 순간부터 살아 있어야 한다. */
+      try { startAutoWalk(); } catch {}
       setTimeout(() => { agents.forEach(a => { showStatusIcon(a.id, '☕', 2500); }); }, 1200);
       logActivity('🏢','ceo','사무실 가동. 에이전트 '+agents.length+'명 자리 잡음.');
       logActivity('🌅','ceo','오늘 하루 시작.');
@@ -17444,6 +18608,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                         emoji: AGENTS[id].emoji,
                                         color: AGENTS[id].color,
                                         tagline: AGENTS[id].tagline,
+                                        mission: AGENTS[id].mission || '',
                                         specialty: AGENTS[id].specialty,
                                         portrait: view.webview.asWebviewUri(portraitUri).toString(),
                                         portraitIsCustom: !!customName && fs.existsSync(vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', customName).fsPath),
@@ -18743,8 +19908,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = response.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) {
                             // Buffer가 비정상적으로 커짐 → 라인 구분자가 없는 응답일 수 있음. 강제로 자른다.
                             buffer = buffer.slice(-MAX_STREAM_BUFFER);
@@ -18784,8 +19950,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = response.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                         const lines = buffer.split('\n'); buffer = lines.pop() || '';
                         for (const line of lines) {
@@ -18993,8 +20160,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             await new Promise<void>((resolve, reject) => {
                 const stream = response.data;
                 let buffer = '';
+                const decoder = new StringDecoder('utf8');
                 stream.on('data', (chunk: Buffer) => {
-                    buffer += chunk.toString();
+                    buffer += decoder.write(chunk);
                     if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
@@ -19098,8 +20266,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 await new Promise<void>((resolve, reject) => {
                     const stream = followUpResponse.data;
                     let buffer = '';
+                    const decoder = new StringDecoder('utf8');
                     stream.on('data', (chunk: Buffer) => {
-                        buffer += chunk.toString();
+                        buffer += decoder.write(chunk);
                         if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                         const lines = buffer.split('\n');
                         buffer = lines.pop() || '';
@@ -19274,6 +20443,13 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 tool: 'my_videos_check.py',
                 domainPattern: /(?:유튜브|youtube|채널|구독자|조회수|시청자|시청\s*시간|내\s*영상|내\s*비디오|video\s*count|subscriber)/i,
             },
+            /* 매매 현황 질문은 읽기 전용 도구로 보낸다. 이게 없으면 분류기가
+               premarket_run 을 골라서 "오늘 뭐 샀어?"에 실제 주문을 내러 간다. */
+            {
+                agentId: 'secretary',
+                tool: 'trading_status.py',
+                domainPattern: /(?:매매|매수|매도|샀|팔았|보유|잔고|체결|포지션|손절|쿨다운|승인\s*대기|오늘.*(?:투자|거래))/i,
+            },
         ];
         /* 창작·기획 동사 — 이게 있으면 분석이 아니라 multi-agent 작업 (CEO 플래너로) */
         const creativePattern = /(?:만들|기획|디자인|썸네일\s*제작|썸네일\s*만들|스크립트\s*써|글\s*써|작성해|코딩|개발|제작|design|create|build|make|write|generate|plan)/i;
@@ -19346,9 +20522,13 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         post({ type: 'agentStart', agent: entry.agentId, task: `${entry.tool} 데이터 수집` });
         post({ type: 'response', value: `🔧 ${a.emoji} ${a.name}: \`${entry.tool}\` 실행 중...` });
         let r: { exitCode: number; output: string; timedOut: boolean };
+        /* 트레이딩 도구는 KRX 유니버스 수집 + 브레인 2단계(codex→claude)라 실측
+           2분, 최악 10분대다. 90초는 정상 실행이 죽는 값이었다. 나머지 도구는
+           빨라야 채팅이 안 멈추므로 90초를 유지한다. */
+        const toolTimeoutMs = _LONG_RUNNING_TOOLS.has(entry.tool) ? 900000 : 90000;
         try {
             /* v2.89.50 — stdout만 캡쳐. stderr (진행 메시지·DeprecationWarning) 채팅에 안 끼게. */
-            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, 90000, 'stdout');
+            r = await runCommandCaptured(`${_pythonCmd()} ${JSON.stringify(entry.tool)}`, toolsDir, () => {}, toolTimeoutMs, 'stdout', { PYTHONIOENCODING: 'utf-8' });
         } catch (e: any) {
             post({ type: 'agentEnd', agent: entry.agentId });
             post({ type: 'error', value: `⚠️ 도구 실행 에러: ${e?.message || e}` });
@@ -19358,7 +20538,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
 
         const toolOut = (r.output || '').trim();
         const toolOk = r.exitCode === 0 && toolOut.length > 0;
-        const toolStatus = r.timedOut ? '⏱️ 90초 초과' : (toolOk ? '✅' : `❌ exit ${r.exitCode}`);
+        const toolStatus = r.timedOut ? `⏱️ ${Math.round(toolTimeoutMs / 1000)}초 초과` : (toolOk ? '✅' : `❌ exit ${r.exitCode}`);
 
         if (!toolOk) {
             const pyMissing = _isPythonMissing(r.exitCode, toolOut);
@@ -20726,8 +21906,10 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 const cmdLine = isAuto
                     ? `*컨텍스트:* 회사 목표·메모리 검토 후 자율적으로 일거리 결정`
                     : `*명령:* ${prompt.slice(0, 200)}`;
-                const tgText = `${header}\n\n${cmdLine}\n\n*브리프:* ${plan.brief}\n\n*완료한 에이전트:*\n${plan.tasks.map(t => `• ${AGENTS[t.agent]?.emoji} ${AGENTS[t.agent]?.name}`).join('\n')}\n\n${finalReport.slice(0, 1500)}\n\n_세션: ${path.basename(sessionDir)}_`;
-                sendTelegramReport(tgText).then(ok => {
+                /* v2.89.167 — 잘림 수정: finalReport 를 1500자로 자르지 않고,
+                   sendTelegramLong 으로 3800자 경계에서 분할 전송한다 (n/m 표기). */
+                const tgText = `${header}\n\n${cmdLine}\n\n*브리프:* ${plan.brief}\n\n*완료한 에이전트:*\n${plan.tasks.map(t => `• ${AGENTS[t.agent]?.emoji} ${AGENTS[t.agent]?.name}`).join('\n')}\n\n${finalReport}\n\n_세션: ${path.basename(sessionDir)}_`;
+                sendTelegramLong(tgText).then(ok => {
                     if (ok) {
                         post({ type: 'telegramSent', agent: 'secretary' });
                     }
@@ -20801,9 +21983,17 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
            특정 에이전트에 다른 모델 할당했으면 그걸 사용. 없으면 기존 로직대로. */
         const overrideModel = getAgentModel(agentId, '');
         if (overrideModel) modelName = overrideModel;
+        /* Gemini면 OpenAI 호환 주소 + 인증 헤더로 갈아끼우고, 나머지는 아래
+           LM Studio 분기(=OpenAI 형식 SSE)를 그대로 탄다. */
+        const gem = _geminiEndpoint(modelName || defaultModel);
+        let extraHeaders: Record<string, string> = {};
         let isLMStudio = _isLMStudioEngine(ollamaBase);
         let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
-        if (!isLMStudio) {
+        if (gem) {
+            isLMStudio = true;
+            apiUrl = gem.url;
+            extraHeaders = gem.headers;
+        } else if (!isLMStudio) {
             try { await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 }); }
             catch { apiUrl = 'http://127.0.0.1:1234/v1/chat/completions'; isLMStudio = true; }
         }
@@ -20840,7 +22030,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                빼고 재시도. 시스템 프롬프트가 이미 JSON-only를 강제하고 있어서 안전. */
             let response;
             try {
-                response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
+                response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal, headers: extraHeaders });
             } catch (err: any) {
                 const status = err?.response?.status;
                 const isStreamErr = err?.response?.data?.on;
@@ -20862,7 +22052,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 const isFormatErr = status === 400 && /response_format|json_schema|json_object/i.test(detail || err?.message || '');
                 if (isFormatErr && body.response_format) {
                     delete body.response_format;
-                    response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
+                    response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal, headers: extraHeaders });
                 } else {
                     throw err;
                 }
@@ -20918,6 +22108,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         const IDLE_TIMEOUT_MS = (cfg.get<number>('streamIdleTimeoutSec', 60) || 60) * 1000;
         await new Promise<void>((resolve, reject) => {
             let buffer = '';
+            const decoder = new StringDecoder('utf8');
             let firstTokenReceived = false;
             let lastChunkAt = Date.now();
             let settled = false;
@@ -20945,7 +22136,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             if (signal) signal.addEventListener('abort', onAbort, { once: true });
             stream.on('data', (chunk: Buffer) => {
                 lastChunkAt = Date.now();
-                buffer += chunk.toString();
+                buffer += decoder.write(chunk);
                 if (buffer.length > MAX_STREAM_BUFFER) buffer = buffer.slice(-MAX_STREAM_BUFFER);
                 const lines = buffer.split('\n'); buffer = lines.pop() || '';
                 for (const line of lines) {
@@ -21009,15 +22200,12 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         const candidates: Array<{ patterns: RegExp[]; agentId: string; agentName: string }> = [
             { patterns: [/코다리[야아!,~ ]/, /코다리야/, /@developer\b/, /@코다리\b/], agentId: 'developer', agentName: '코다리' },
             { patterns: [/현빈[아야!,~ ]/, /현빈아/, /@business\b/, /@현빈\b/], agentId: 'business', agentName: '현빈' },
-            { patterns: [/루나[야아!,~ ]/, /루나야/, /@editor\b/, /@루나\b/], agentId: 'editor', agentName: '루나' },
             { patterns: [/레오[야아!,~ ]/, /레오야/, /@youtube\b/, /@레오\b/], agentId: 'youtube', agentName: '레오' },
             { patterns: [/영숙[아야!,~ ]/, /영숙아/, /@secretary\b/, /@영숙\b/], agentId: 'secretary', agentName: '영숙' },
             /* 역할 호칭 — 단, 자연스러운 명령에서 잘못 매칭 안 되게 "야"·"!"·"," 같은 호격 표지 필요 */
+            { patterns: [/판정자[야아!,~ ]/, /판정자님/, /@instagram\b/, /@판정자\b/], agentId: 'instagram', agentName: '판정자' },
             { patterns: [/개발자[야아!,]/, /@developer\b/], agentId: 'developer', agentName: '개발자' },
-            { patterns: [/디자이너[야아!,]/, /@designer\b/], agentId: 'designer', agentName: '디자이너' },
-            { patterns: [/작가[야아!,]/, /@writer\b/], agentId: 'writer', agentName: '작가' },
-            { patterns: [/리서처[야아!,]/, /@researcher\b/], agentId: 'researcher', agentName: '리서처' },
-            { patterns: [/인스타[야아!,]/, /@instagram\b/], agentId: 'instagram', agentName: '인스타' },
+            { patterns: [/선정자[야아!,]/, /@youtube\b/], agentId: 'youtube', agentName: '선정자' },
         ];
         for (const c of candidates) {
             for (const p of c.patterns) {

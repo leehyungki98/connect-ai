@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions", "exits"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "action", "entry_price", "stop_price", "target_price", "horizon_days", "reason"],
+        "properties": {
+          "symbol": {"type": "string"},
+          "action": {"type": "string", "enum": ["enter", "skip"]},
+          "entry_price": {"type": ["integer", "null"]},
+          "stop_price": {"type": ["integer", "null"]},
+          "target_price": {"type": ["integer", "null"]},
+          "horizon_days": {"type": ["integer", "null"]},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "exits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "reason"],
+        "properties": {
+          "symbol": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}

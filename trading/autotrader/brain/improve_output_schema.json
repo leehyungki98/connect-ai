@@ -1,0 +1,44 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "improvements"
+  ],
+  "properties": {
+    "improvements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "analysis",
+          "diagnosis",
+          "proposal",
+          "risk",
+          "tradeoff"
+        ],
+        "properties": {
+          "analysis": {
+            "type": "string"
+          },
+          "diagnosis": {
+            "type": "string"
+          },
+          "proposal": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string"
+          },
+          "tradeoff": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -428,9 +428,23 @@ body::before {
 /* v2.77 — Visual-first team grid. Cards become character tiles: face photo
    dominates, name overlaid on bottom gradient, status conveyed by colored
    border glow (no text). Hover reveals specialty in a tooltip layer. */
-.team-grid {
+/* 2026-07-20 — 데스크별 묶음 렌더로 전환.
+   컨테이너는 세로 흐름(라벨 → 카드행 → 라벨 → 카드행)이고, 카드 그리드는
+   .team-row 로 내려갔다. 기존 카드 스타일(.agent-card)은 그대로 재사용한다. */
+.team-grid { display: flex; flex-direction: column; gap: 14px; }
+.team-row {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 12px;
+}
+.team-desk-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  color: var(--muted, #8b9bb4); text-transform: uppercase;
+  padding-bottom: 2px; border-bottom: 1px solid var(--line, rgba(255,255,255,.08));
+}
+.team-desk-count {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(255,255,255,.07); color: var(--muted, #8b9bb4);
 }
 .agent-card {
   position: relative; aspect-ratio: 3/4;
@@ -476,7 +490,26 @@ body::before {
 .agent-card .agent-role-mini {
   font-size: 9.5px; color: rgba(255,255,255,.75); font-weight: 500;
   text-transform: uppercase; letter-spacing: .8px;
+  /* 긴 역할("선정자 · SELECTOR (GPT/CODEX)")이 두 줄로 넘쳐 카드 밖으로
+     삐져나오던 문제. 전체 역할은 모달에서 볼 수 있으므로 한 줄로 자른다. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* 사진 위 임무 칩 — 좌상단. left:10px 의 활동 점과 겹치지 않게 24px 에서 시작하고,
+   우상단 task badge(22px + 8px)를 피하도록 최대 폭을 제한한다. */
+.agent-card .agent-mission-chip {
+  position: absolute; left: 24px; top: 8px; z-index: 3;
+  max-width: calc(100% - 62px);
+  padding: 4px 9px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: .2px; color: #fff;
+  background: rgba(8,8,12,.72); backdrop-filter: blur(6px);
+  border: 1px solid var(--agent-color, rgba(255,255,255,.2));
+  box-shadow: 0 2px 8px rgba(0,0,0,.45);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+  transition: opacity .2s;
+}
+/* hover 시 tagline 툴팁이 같은 자리를 덮으므로 칩을 숨긴다 */
+.agent-card:hover .agent-mission-chip { opacity: 0; }
 /* Floating task badge — only renders when openTasks > 0 */
 .agent-task-badge {
   position: absolute; top: 8px; right: 8px;
@@ -576,6 +609,14 @@ body::before {
 .adm-hero::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,transparent 60%,rgba(8,8,12,.6) 100%);border-radius:24px 24px 0 0}
 .adm-hero.adm-hero-emoji{background:linear-gradient(135deg,var(--ag-glow,rgba(255,255,255,.06)),rgba(255,255,255,.02));display:flex;align-items:center;justify-content:center}
 .adm-hero-emoji-glyph{font-size:96px;filter:drop-shadow(0 4px 16px rgba(0,0,0,.5))}
+/* 사진 위 역할 배지 — 초상화만 봐도 트레이딩 임무가 읽히게. ::after 그라데이션
+   위에 오도록 z-index를 올린다. */
+.adm-hero-cap{position:absolute;left:14px;bottom:12px;z-index:2;max-width:calc(100% - 28px);
+  font-size:11px;font-weight:700;letter-spacing:.4px;color:#fff;
+  padding:5px 11px;border-radius:999px;background:rgba(8,8,12,.72);
+  border:1px solid var(--ag,rgba(255,255,255,.25));backdrop-filter:blur(6px);
+  box-shadow:0 2px 10px rgba(0,0,0,.45);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* Identity */
 .adm-name{font-size:24px;font-weight:800;color:#fff;letter-spacing:-.4px;margin-top:18px}
 .adm-role{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1.4px;margin-top:4px;font-weight:600}

@@ -258,12 +258,26 @@ function render(s) {
     setText('tlOn', onCount);
     setText('tlOpt', optionalOff);
     setText('tlLock', lockedCount);
-    teamBody.innerHTML = s.agentTeam.map(a => {
+    /* 2026-07-20 — 데스크별 묶음 렌더.
+       스윙팀(한국 스윙)과 미장팀(미국 장기)은 원리가 다른 별개 조직이라
+       한 줄에 섞으면 누가 어느 팀인지 알 수 없다. 조직의 단일 출처는 DESKS.md.
+       desk 필드가 없는 구버전 데이터가 와도 '공용' 으로 떨어져 깨지지 않는다. */
+    const DESK_LABELS = {
+      swing: '스윙팀 · 한국 주식 (trading/)',
+      us: '미장팀 · 미국 주식 (us-longterm/)',
+      shared: '공용',
+    };
+    const renderCard = a => {
       const isLocked = (a.lockable && !a.hired);
       const isInactive = (!isLocked && a.togglable && !a.active);
       const photoHtml = a.profileImageUri
         ? '<div class="agent-photo" style="background-image:url(\'' + esc(a.profileImageUri) + '\')"></div>'
         : '<div class="agent-photo no-photo">' + esc(a.emoji) + '</div>';
+      /* 사진 위 임무 칩 — 초상화가 콘텐츠 시절 그림이라 사진만으론 트레이딩
+         역할을 알 수 없다. 활성 카드에만 (잠김/비활성은 정체를 가리는 게 의도). */
+      const missionChip = a.mission
+        ? '<div class="agent-mission-chip">' + esc(a.mission) + '</div>'
+        : '';
       const taskBadge = (a.openTasks > 0)
         ? '<div class="agent-task-badge" title="' + a.openTasks + '건 진행 중">' + a.openTasks + '</div>'
         : '';
@@ -306,6 +320,7 @@ function render(s) {
         +   photoHtml
         +   '<div class="agent-overlay"></div>'
         +   activeDot
+        +   missionChip
         +   taskBadge
         +   tooltip
         +   '<div class="agent-name-strip">'
@@ -313,7 +328,19 @@ function render(s) {
         +     '<div class="agent-role-mini">' + esc(a.role || '') + '</div>'
         +   '</div>'
         + '</div>';
-    }).join('');
+    };
+    /* CEO 는 데스크 위에 있으므로 묶음 밖에 단독으로 둔다. */
+    const ceo = s.agentTeam.filter(a => a.id === 'ceo');
+    const rest = s.agentTeam.filter(a => a.id !== 'ceo');
+    let html = ceo.length ? '<div class="team-row">' + ceo.map(renderCard).join('') + '</div>' : '';
+    ['swing', 'us', 'shared'].forEach(deskKey => {
+      const members = rest.filter(a => (a.desk || 'shared') === deskKey);
+      if (!members.length) return;
+      html += '<div class="team-desk-label">' + esc(DESK_LABELS[deskKey] || deskKey)
+           +  ' <span class="team-desk-count">' + members.length + '</span></div>'
+           +  '<div class="team-row">' + members.map(renderCard).join('') + '</div>';
+    });
+    teamBody.innerHTML = html;
     /* v2.89.103+107 — 카드 클릭 분기:
        1. locked (Luna PIN 미통과) → openHirePinModal
        2. inactive (OPTIONAL OFF) → openActivateModal
@@ -1019,9 +1046,12 @@ function showAgentDetailModal(a){
   bd.className = 'adm-backdrop';
   bd.style.setProperty('--ag', a.color || '#FBBF24');
   bd.style.setProperty('--ag-glow', (a.color||'#FBBF24')+'33');
+  /* 사진 위 역할 배지 — 초상화가 콘텐츠 시절 그림이어도 사진 영역만 보고
+     트레이딩 역할을 알 수 있게 이미지 위에 직접 얹는다. */
+  const heroCap = a.role ? '<div class="adm-hero-cap">'+esc(a.role)+'</div>' : '';
   const hero = a.profileImageUri
-    ? '<div class="adm-hero" style="background-image:url(\''+esc(a.profileImageUri)+'\')"></div>'
-    : '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">'+esc(a.emoji)+'</div></div>';
+    ? '<div class="adm-hero" style="background-image:url(\''+esc(a.profileImageUri)+'\')">'+heroCap+'</div>'
+    : '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">'+esc(a.emoji)+'</div>'+heroCap+'</div>';
   const skillsActive = (a.skills||[]).filter(s => s.enabled && !s.locked).length;
   const stats = ''
     + '<div class="adm-stat"><div class="adm-stat-icon">📚</div><div class="adm-stat-num">'+(a.verifiedCount||0)+'</div></div>'
@@ -1086,8 +1116,18 @@ function showAgentDetailModal(a){
   /* v2.89.107 — 비활성화 버튼 (OPTIONAL 에이전트만 노출) */
   const deactBtn = bd.querySelector('[data-act="deactivate"]');
   if (deactBtn) {
+    /* 웹뷰 샌드박스에는 allow-modals가 없어서 confirm()이 항상 false다.
+       네이티브 모달 대신 버튼 자체를 2단계 확인으로 쓴다. */
+    let armed = false;
+    let armTimer = 0;
     deactBtn.addEventListener('click', () => {
-      if (!confirm(`${a.name||a.id} 를 비활성화할까요?\n언제든 다시 활성화할 수 있습니다.`)) return;
+      if (!armed) {
+        armed = true;
+        deactBtn.textContent = '⏸ 한 번 더 누르면 비활성화';
+        armTimer = setTimeout(() => { armed = false; deactBtn.textContent = '⏸ 비활성화'; }, 4000);
+        return;
+      }
+      clearTimeout(armTimer);
       try { vscode.postMessage({ type:'setAgentActive', agent: a.id, active: false }); } catch {}
       close();
     });
@@ -1123,6 +1163,16 @@ function showAgentDetailModal(a){
 window.addEventListener('message', e => {
   const m = e.data;
   if (m.type === 'state') render(m);
+  else if (m.type === 'swingShadowHtml') {
+    /* 섀도 카드만 교체 — 15분 시세 갱신 시 전체 재렌더 없이 이 카드만 (깜빡임 최소). */
+    const el = document.getElementById('swingShadowCard');
+    if (el && m.html) { const tmp = document.createElement('div'); tmp.innerHTML = m.html; if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild); }
+  }
+  else if (m.type === 'usLongtermHtml') {
+    /* 미장팀 카드도 같은 방식 — 15분마다 이 카드만 교체. */
+    const el = document.getElementById('usLongtermPositionsCard');
+    if (el && m.html) { const tmp = document.createElement('div'); tmp.innerHTML = m.html; if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild); }
+  }
   else if (m.type === 'toast') toast(m.text, m.err);
   else if (m.type === 'skillRunOutput') {
     /* v2.89.12 — 스킬 단독 실행 결과 라이브 표시 */
@@ -1255,6 +1305,7 @@ function _renderRevMiniSpark(byDay, primaryCur) {
 function _renderRevenueMini(data) {
   const card = document.getElementById('revenueCard');
   if (!card) return;
+  if (card.dataset.trading) return; // 트레이딩 커맨드 센터 — 게이트 상태 유지 (PayPal 덮어쓰기 방지)
   if (data?.error) {
     document.getElementById('revSubtitle').textContent = '⚠️ ' + (data.error || '연결 확인 필요');
     return;
@@ -1288,4 +1339,29 @@ function _renderRevenueMini(data) {
 window.addEventListener('message', e => {
   const m = e.data;
   if (m.type === 'revenueMini') _renderRevenueMini(m.data);
+});
+
+/* 변경 제안 카드 심사 버튼 — 카드가 다시 그려질 때마다 붙지 않도록 문서
+   레벨 위임으로 한 번만 건다. 승인은 되돌리기 번거로우니 2단계 확인. */
+document.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest && e.target.closest('.prop-btn');
+  if (!btn) return;
+  const act = btn.getAttribute('data-act');
+  const card = btn.getAttribute('data-card');
+  const box = btn.closest('.prop-card');
+  const reason = box ? (box.querySelector('.prop-reason') || {}).value || '' : '';
+  if ((act === 'reject' || act === 'revise') && !reason.trim()) {
+    btn.textContent = '⚠️ 사유를 적어주세요';
+    setTimeout(() => { btn.textContent = act === 'reject' ? '❌ 거부' : '✏️ 수정 요청'; }, 2500);
+    return;
+  }
+  if (act === 'approve' && btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = '✅ 한 번 더 누르면 승인';
+    setTimeout(() => { btn.dataset.armed = '0'; btn.textContent = '✅ 승인'; }, 4000);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '처리 중…';
+  try { vscode.postMessage({ type: 'proposalAction', action: act, card: card, reason: reason }); } catch (_) {}
 });
