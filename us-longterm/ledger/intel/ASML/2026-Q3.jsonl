@@ -2,3 +2,4 @@
 {"date": "2026-07-29", "source": "ticker:NVDA", "event": "CXMT, Sandisk, ASML, SpaceX, D-Wave Quantum, Workday, and More Stocks That Explain Today’s Market", "impact": -2, "thesis_axis": "경쟁", "basis": "중국 국영기업의 반도체 제조장비 양산 개시는 노광장비 독점에 기반한 ASML 논지를 직접 겨냥한 경쟁 위협이다."}
 {"date": "2026-08-03", "source": "ticker:TSM", "event": "ASML vs. TSM: Which AI Chip Stock Is the Better Buy Now?", "impact": -1, "thesis_axis": "밸류", "basis": "AI 칩 수요 수혜에도 밸류에이션과 애널리스트 심리에서 TSMC에 밀린다는 상대 비교다."}
 {"date": "2026-08-03", "source": "ticker:TSM", "event": "ASML's EUV Machines Are Becoming More Valuable Than Ever. Here's Why.", "impact": 1, "thesis_axis": "수익성", "basis": "EUV 장비의 대체 불가 지위로 비교 대상 없는 가격 결정력을 보유한다는 분석"}
+{"date": "2026-08-08", "source": "ticker:NVDA", "event": "Will ASML Split Its Stock This Year?", "impact": 0, "thesis_axis": "밸류", "basis": "주가 수준에 따른 액면분할 여부는 기업 펀더멘털을 바꾸지 않는다."}

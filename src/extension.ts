@@ -8329,7 +8329,23 @@ function _swingSelectionCardHtml(): string {
             recs = Object.values(byDate).sort((a: any, b: any) => a.date < b.date ? 1 : -1);
         }
     } catch { /* 표시 전용 */ }
+    /* 폭은 breadth_log.jsonl 에서 읽는다 (매일 기록되는 정답값). 예전엔 프리마켓
+       skip 메시지를 정규식으로 뽑았는데, codex 실패 등으로 폭 메시지가 안 찍히는 날엔
+       None 이 되어 옛날 값에 멈춘 것처럼 보였다 (2026-08-11 실제 사고 — 폭 78.5%인데
+       카드는 고정). breadth_log 는 파이프라인 앞단에서 항상 남으므로 안정적이다. */
+    let breadthLog: Record<string, number> = {};
+    try {
+        const bp = _resolveTradingRoot() ? path.join(_resolveTradingRoot()!, 'ledger', 'shadow', 'breadth_log.jsonl') : null;
+        if (bp && fs.existsSync(bp)) {
+            for (const ln of fs.readFileSync(bp, 'utf-8').trim().split('\n')) {
+                if (!ln.trim()) continue;
+                try { const r = JSON.parse(ln); if (r.date && typeof r.breadth === 'number') breadthLog[r.date] = r.breadth; } catch { /* skip */ }
+            }
+        }
+    } catch { /* 표시 전용 */ }
     const breadthOf = (r: any): number | null => {
+        if (r?.date && breadthLog[r.date] !== undefined) return Math.round(breadthLog[r.date] * 100);
+        /* 폴백 — breadth_log 에 없으면(구 데이터) 예전처럼 skip 메시지에서 */
         for (const s of (r?.skipped || [])) { const m = String(s).match(/폭\s*(\d+)%/); if (m) return parseInt(m[1], 10); }
         return null;
     };
