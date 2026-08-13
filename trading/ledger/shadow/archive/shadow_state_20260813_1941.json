@@ -1,0 +1,85 @@
+{
+  "cash_krw": 5071995,
+  "positions": {
+    "021240": {
+      "name": "코웨이",
+      "qty": 16,
+      "entry_price": 93500,
+      "stop": 85646,
+      "target": 103500,
+      "horizon_days": 15,
+      "entry_date": "2026-07-22",
+      "breadth": 0.16
+    },
+    "138040": {
+      "name": "메리츠금융지주",
+      "qty": 11,
+      "entry_price": 119960,
+      "stop": 114500,
+      "target": 139500,
+      "horizon_days": 15,
+      "entry_date": "2026-08-03",
+      "breadth": 0.175,
+      "rank": 2
+    },
+    "316140": {
+      "name": "우리금융지주",
+      "qty": 42,
+      "entry_price": 32717,
+      "stop": 31429,
+      "target": 36800,
+      "horizon_days": 15,
+      "entry_date": "2026-08-03",
+      "breadth": 0.175,
+      "rank": 3
+    }
+  },
+  "pending": [
+    {
+      "symbol": "051900",
+      "name": "LG생활건강",
+      "qty": 4,
+      "limit_price": 303500,
+      "stop": 274665,
+      "target": 340000,
+      "horizon_days": 15,
+      "rank": 1,
+      "order_date": "2026-08-13",
+      "breadth": 0.84
+    },
+    {
+      "symbol": "068270",
+      "name": "셀트리온",
+      "qty": 6,
+      "limit_price": 202000,
+      "stop": 190261,
+      "target": 217000,
+      "horizon_days": 15,
+      "rank": 2,
+      "order_date": "2026-08-13",
+      "breadth": 0.84
+    },
+    {
+      "symbol": "001450",
+      "name": "현대해상",
+      "qty": 32,
+      "limit_price": 42950,
+      "stop": 39034,
+      "target": 48000,
+      "horizon_days": 15,
+      "rank": 3,
+      "order_date": "2026-08-13",
+      "breadth": 0.84
+    }
+  ],
+  "cooldowns": {
+    "012330": "2026-07-27",
+    "086790": "2026-07-28",
+    "055550": "2026-07-29",
+    "105560": "2026-07-29",
+    "001450": "2026-08-04",
+    "161390": "2026-07-30",
+    "005830": "2026-08-04"
+  },
+  "last_date": "2026-08-13"
+}

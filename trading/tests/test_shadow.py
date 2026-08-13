@@ -399,3 +399,33 @@ def test_rank_survives_to_position():
     assert s["pending"][0]["rank"] == 2
     _fill(s, "005930", "2026-07-24", 70000, 70500, 69000)
     assert s["positions"]["005930"]["rank"] == 2
+
+
+# ── 두 권 분리 (강세/약세) ─────────────────────────────────────────────
+
+def test_book_for_breadth():
+    assert shadow.book_for_breadth(0.78) == "bull"
+    assert shadow.book_for_breadth(0.50) == "bull"     # 50% 는 강세 포함
+    assert shadow.book_for_breadth(0.49) == "bear"
+    assert shadow.book_for_breadth(0.10) == "bear"
+    assert shadow.book_for_breadth(None) == "bull"     # 구데이터는 강세
+
+
+def test_books_are_isolated(tmp_path, monkeypatch):
+    """강세책·약세책은 서로 다른 파일 — 한쪽 진입이 다른 쪽에 안 섞인다."""
+    monkeypatch.setattr(shadow, "STATE_FILE", tmp_path / "shadow_state.json")
+    monkeypatch.setattr(shadow, "LEDGER_DIR", tmp_path)
+    monkeypatch.setattr(shadow, "TRADES_FILE", tmp_path / "shadow_trades.jsonl")
+    shadow.record_entries("2026-08-13", [_entry("005930", 70000, 66000, 78000)],
+                          {"005930": 0.0}, breadth=0.78, book="bull")
+    shadow.record_entries("2026-08-13", [_entry("000660", 100000, 95000, 110000)],
+                          {"000660": 0.0}, breadth=0.20, book="bear")
+    bull = shadow.load_state("bull")
+    bear = shadow.load_state("bear")
+    assert [o["symbol"] for o in bull["pending"]] == ["005930"]
+    assert [o["symbol"] for o in bear["pending"]] == ["000660"]
+    # 파일도 분리
+    assert (tmp_path / "shadow_state_bull.json").exists()
+    assert (tmp_path / "shadow_state_bear.json").exists()
+    assert (tmp_path / "shadow_trades_bull.jsonl").exists()
+    assert (tmp_path / "shadow_trades_bear.jsonl").exists()

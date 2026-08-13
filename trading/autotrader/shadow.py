@@ -80,24 +80,45 @@ def _fresh_state() -> dict:
             "cooldowns": {}, "last_date": None}
 
 
-def load_state() -> dict:
-    if STATE_FILE.exists():
+# ── 두 권 분리 (2026-08-13 사용자) ──
+# 강세장(폭≥50%)과 약세장(폭<50%)을 별도 계좌로 추적한다. 백테스트가 두 구간에서
+# 전략이 반대로 작동함을 보였으니(강세=상위 모멘텀, 약세=반전), 성적을 섞지 않는다.
+# book=None → 기존 단일 파일(하위호환·테스트). book='bull'/'bear' → 구간별 파일.
+BOOKS = ("bull", "bear")
+
+
+def _state_file(book: str = None) -> Path:
+    return STATE_FILE if not book else STATE_FILE.parent / f"shadow_state_{book}.json"
+
+
+def _trades_file(book: str = None) -> Path:
+    return TRADES_FILE if not book else LEDGER_DIR / f"shadow_trades_{book}.jsonl"
+
+
+def book_for_breadth(breadth) -> str:
+    """폭 → 책. 폭≥50% 강세, 그 밑 약세. 폭 None(구데이터)은 강세로 둔다."""
+    return "bear" if (breadth is not None and breadth < 0.50) else "bull"
+
+
+def load_state(book: str = None) -> dict:
+    p = _state_file(book)
+    if p.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
     return _fresh_state()
 
 
-def save_state(s: dict) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
+def save_state(s: dict, book: str = None) -> None:
+    p = _state_file(book)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _append_trade(rec: dict) -> None:
+def _append_trade(rec: dict, book: str = None) -> None:
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-    with open(TRADES_FILE, "a", encoding="utf-8") as f:
+    with open(_trades_file(book), "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
@@ -240,18 +261,19 @@ def _portfolio(s: dict) -> Portfolio:
 
 def record_entries(date: str, entries, vol20_by_symbol: dict,
                    breadth: float = None, names: dict = None,
-                   state: dict = None) -> list:
+                   state: dict = None, book: str = None) -> list:
     """판정자 통과분(entries)을 섀도 포지션으로 진입 기록. 주문 없음.
 
     entries: [{symbol, entry_price, stop_price, target_price, horizon_days}, ...]
     breadth: 그날 시장 폭 (0~1). 폭 구간별 분석용으로 진입 이벤트에 남긴다.
+    book: 'bull'/'bear'/None — 강세/약세 계좌 분리(2026-08-13). None=단일(구).
     파이프라인과 동일 제약: 이미 보유 제외, 쿨다운 제외, 일 상한 MAX_NEW_PER_DAY,
     C2 손절 보정, position_size 사이징. 반환: 진입 이벤트 목록.
 
     폭 차단 여부와 무관하게 판정자 통과분을 다 기록한다 — 실제 데스크는 필터에
     막혀 거의 안 사므로, 섀도북이 곧 "필터 없었으면 어땠을지" 활성 계좌가 된다.
     """
-    s = state if state is not None else load_state()
+    s = state if state is not None else load_state(book)
     new_today, events = 0, []
     for d in entries:
         sym = d["symbol"]
@@ -288,21 +310,21 @@ def record_entries(date: str, entries, vol20_by_symbol: dict,
                "target": int(d["target_price"]), "rank": rk,
                "horizon_days": int(d["horizon_days"]), "breadth": breadth}
         events.append(rec)
-        _append_trade(rec)
+        _append_trade(rec, book)
         new_today += 1
     s["last_date"] = date
     if state is None:
-        save_state(s)
+        save_state(s, book)
     return events
 
 
-def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
+def settle_pending(bars_by_symbol: dict, state: dict = None, book: str = None) -> list:
     """주문일 봉으로 지정가 매수 체결/미체결 판정 — 실전과 동일(저가 ≤ 지정가).
 
     체결되면 포지션 개설(실제 체결가·수수료 반영), 안 되면 '미체결'로 기록하고 취소.
     주문일 봉이 아직 없으면(장중) 그대로 대기. 반환: 체결·미체결 이벤트 목록.
     """
-    s = state if state is not None else load_state()
+    s = state if state is not None else load_state(book)
     events, still_pending = [], []
     for o in s.get("pending", []):
         sym, od = o["symbol"], o["order_date"]
@@ -318,7 +340,7 @@ def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
                    "day_low": bar["low"], "breadth": o.get("breadth"),
                    "failure_kind": "미체결"}
             events.append(rec)
-            _append_trade(rec)
+            _append_trade(rec, book)
             continue                          # 취소 — 실전에서도 안 사진 것
         s["cash_krw"] += fill.net_krw          # 매수 net_krw 는 음수(대금+수수료)
         s["positions"][sym] = {
@@ -333,10 +355,10 @@ def settle_pending(bars_by_symbol: dict, state: dict = None) -> list:
                "stop": o["stop"], "target": o["target"], "rank": o.get("rank"),
                "horizon_days": o["horizon_days"], "breadth": o.get("breadth")}
         events.append(rec)
-        _append_trade(rec)
+        _append_trade(rec, book)
     s["pending"] = still_pending
     if state is None:
-        save_state(s)
+        save_state(s, book)
     return events
 
 
@@ -419,13 +441,13 @@ def _failure_kind(reason: str, bar: dict, p: dict, held: int) -> str:
     return "1봉손절" if held <= 1 else "손절"
 
 
-def resolve(bars_by_symbol: dict, state: dict = None) -> list:
+def resolve(bars_by_symbol: dict, state: dict = None, book: str = None) -> list:
     """보유 섀도를 미래 일봉으로 청산 판정 — 백테스트와 동일(손절→목표→기간).
 
     bars_by_symbol: {symbol: [{date, open, high, low, volume}, ...]} — 진입일 이후 봉.
     반환: 청산 이벤트 목록.
     """
-    s = state if state is not None else load_state()
+    s = state if state is not None else load_state(book)
     closed = []
     for sym in list(s["positions"]):
         p = s["positions"][sym]
@@ -453,14 +475,14 @@ def resolve(bars_by_symbol: dict, state: dict = None) -> list:
                    "realized_krw": realized,
                    "ret_pct": round((fill.price / p["entry_price"] - 1) * 100, 2)}
             closed.append(rec)
-            _append_trade(rec)
+            _append_trade(rec, book)
             if kind == "stop":
                 s["cooldowns"][sym] = _add_trading_days(bar["date"], COOLDOWN_BARS,
                                                         bars_by_symbol.get(sym, []))
             del s["positions"][sym]
             break
     if state is None:
-        save_state(s)
+        save_state(s, book)
     return closed
 
 

@@ -64,13 +64,15 @@ def _collect() -> list:
                      if ln.strip() and not ln.strip().startswith("---")][:14]
             blocks.append({"source": f"현빈 사후분석 ({revs[-1].stem})", "facts": facts})
 
-    # 섀도(가상매매) — 성적·실패 분류
-    sv_p = ROOT / "state" / "shadow_view.json"
+    # 섀도(가상매매) — 강세책/약세책 나눠서. 성적·실패 분류
     sh = []
-    if sv_p.exists():
-        v = json.loads(sv_p.read_text(encoding="utf-8"))
-        sh.append(f"가상매매 보유 {len(v.get('positions', []))}종목, "
-                  f"평가손익 {v.get('total_pnl_krw', 0):+,}원 ({v.get('total_ret_pct', 0):+}%)")
+    for book, label in (("bull", "강세책(폭≥50%)"), ("bear", "약세책(폭<50%)")):
+        sv_p = ROOT / "state" / f"shadow_view_{book}.json"
+        if sv_p.exists():
+            v = json.loads(sv_p.read_text(encoding="utf-8"))
+            if v.get("positions") or v.get("total_pnl_krw"):
+                sh.append(f"{label}: 보유 {len(v.get('positions', []))}종목, "
+                          f"평가손익 {v.get('total_pnl_krw', 0):+,}원 ({v.get('total_ret_pct', 0):+}%)")
     samples = _rows(ROOT / "ledger" / "shadow" / "shadow_samples.jsonl")
     closed = [r for r in samples if r.get("status") == "closed"]
     if closed:

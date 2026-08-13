@@ -39,25 +39,52 @@ def _fetch_bars(symbol: str, from_date: str, to_date: str) -> list:
     return bars
 
 
+def _resolve_book(book: str, bars_by_symbol: dict) -> None:
+    """한 책(강세/약세)의 체결·청산 판정 + 사람 말 보고."""
+    label = "강세책" if book == "bull" else "약세책"
+    st0 = shadow.load_state(book)
+    if not st0.get("positions") and not st0.get("pending"):
+        return
+    settled = shadow.settle_pending(bars_by_symbol, book=book)
+    for e in settled:
+        if e["event"] == "entry":
+            print(f"  [{label}] 체결 {e.get('name', e['symbol'])} · {e['qty']}주 @ {e['entry_price']:,}원")
+        else:
+            print(f"  [{label}] 미체결 {e.get('name', e['symbol'])} · 실전에서도 안 샀을 주문")
+    closed = shadow.resolve(bars_by_symbol, book=book)
+    if closed:
+        print(f"\n🔔 [{label}] 오늘 팔린 종목")
+        for c in closed:
+            win = c["ret_pct"] >= 0
+            why = {"목표달성": "목표가 도달", "갭손절": "갭하락으로 손절",
+                   "1봉손절": "하루 만에 손절", "손절": "손절",
+                   "기간만료": "보유기간 만료"}.get(c["failure_kind"], c["failure_kind"])
+            print(f"  {'📈' if win else '📉'} {c.get('name', c['symbol'])} — {why} "
+                  f"{c['entry_price']:,}→{c['exit_price']:,} ({c['ret_pct']:+.2f}%) "
+                  f"실현 {c['realized_krw']:+,}원")
+    st = shadow.load_state(book)
+    print(f"  [{label}] 남은 보유 {len(st.get('positions', {}))} · 대기 {len(st.get('pending', []))}")
+
+
 def main() -> int:
     from datetime import date
     today = date.today().isoformat()
-    state = shadow.load_state()
-    open_pos = state.get("positions", {})
-    pending = state.get("pending", [])
+    # 두 책 + 샘플의 모든 보유·대기 종목을 모아 일봉 조회 대상으로.
+    targets = set()
+    for book in shadow.BOOKS:
+        st = shadow.load_state(book)
+        targets |= {(o["symbol"], o["order_date"]) for o in st.get("pending", [])}
+        targets |= {(sym, p["entry_date"]) for sym, p in st.get("positions", {}).items()}
     samples = [r for r in shadow.load_samples()
                if r.get("status") in ("pending", "filled")]
-    if not open_pos and not pending and not samples:
+    targets |= {(r["symbol"], r.get("entry_date") or r["date"]) for r in samples}
+    if not targets:
         print("보유·대기 섀도 없음 — 판정할 것 없음.")
         return 0
 
     _load_krx_env()
-    print(f"[계좌] 대기 {len(pending)}건 · 보유 {len(open_pos)}종목 | "
-          f"[샘플] 미결 {len(samples)}건 → 일봉 조회")
+    print(f"조회 대상 {len(targets)}건 → 일봉 조회")
     bars_by_symbol = {}
-    targets = {(o["symbol"], o["order_date"]) for o in pending}
-    targets |= {(sym, p["entry_date"]) for sym, p in open_pos.items()}
-    targets |= {(r["symbol"], r.get("entry_date") or r["date"]) for r in samples}
     for sym, since in targets:
         try:
             bars = _fetch_bars(sym, since, today)
@@ -69,37 +96,9 @@ def main() -> int:
             print(f"  {sym}: 일봉 조회 실패 — 유지 ({e})")
             bars_by_symbol.setdefault(sym, [])
 
-    # ① 지정가 매수 체결/미체결 판정 (실전과 동일: 저가 ≤ 지정가)
-    settled = shadow.settle_pending(bars_by_symbol)
-    for e in settled:
-        if e["event"] == "entry":
-            print(f"  체결 {e.get('name', e['symbol'])} · {e['qty']}주 @ {e['entry_price']:,}원 "
-                  f"(지정가 {e['limit_price']:,})")
-        else:
-            print(f"  미체결 {e.get('name', e['symbol'])} · 지정가 {e['limit_price']:,} "
-                  f"> 당일 저가 {e['day_low']:,} — 실전에서도 안 샀을 주문")
-
-    # ② 보유분 청산 판정 (손절 → 목표 → 기간)
-    closed = shadow.resolve(bars_by_symbol)
-    if not closed:
-        print("청산 없음 — 보유 유지.")
-    else:
-        # 청산은 사장님이 제일 먼저 볼 사건이라 위로 크게 뽑는다.
-        print("")
-        print("🔔 오늘 팔린 종목")
-        for c in closed:
-            win = c["ret_pct"] >= 0
-            why = {"목표달성": "목표가 도달", "갭손절": "갭하락으로 손절",
-                   "1봉손절": "하루 만에 손절", "손절": "손절",
-                   "기간만료": "보유기간 만료"}.get(c["failure_kind"], c["failure_kind"])
-            print(f"  {'📈' if win else '📉'} {c.get('name', c['symbol'])} — {why}")
-            print(f"     {c['entry_price']:,}원 → {c['exit_price']:,}원 "
-                  f"({c['ret_pct']:+.2f}%) · {c['hold_days']}일 보유")
-            print(f"     실현손익 {c['realized_krw']:+,}원")
-        print("")
-    st = shadow.load_state()
-    print(f"[계좌] 남은 보유 {len(st.get('positions', {}))}종목 · "
-          f"대기 {len(st.get('pending', []))}건")
+    # 강세책·약세책 각각 판정
+    for book in shadow.BOOKS:
+        _resolve_book(book, bars_by_symbol)
 
     # ③ 샘플 판정 — 계좌와 동일 로직, 제약만 없다 (폭 구간별 표본용)
     stat = shadow.resolve_samples(bars_by_symbol)

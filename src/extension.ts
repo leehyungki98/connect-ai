@@ -8210,19 +8210,22 @@ function _tradingGateCardHtml(): string {
 
 /** 스윙팀 섀도 포트폴리오 — 페이퍼(주문 0). state/shadow_state·shadow_view(실시간
  *  평가) + ledger/shadow/shadow_trades.jsonl(청산 내역) 읽기 전용. 미장 보유 스타일. */
-function _swingShadowCardHtml(): string {
+/* 강세책/약세책 한 권의 HTML 블록. 2026-08-13 — 섀도를 폭 구간으로 나눠 본다.
+   강세(폭≥50%)와 약세(폭<50%)는 전략이 반대로 작동하므로 성적을 섞지 않는다. */
+function _shadowBookBlock(book: 'bull' | 'bear'): string {
     const esc = (s: any) => String(s).replace(/[&<>"]/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
     const col = (n: number) => n > 0 ? '#e5484d' : n < 0 ? '#3b82f6' : 'inherit';
     const sg = (n: number) => n > 0 ? '+' : '';
     const root = _resolveTradingRoot();
+    const label = book === 'bull' ? '강세책 (폭≥50%)' : '약세책 (폭<50%)';
+    const icon = book === 'bull' ? '🔺' : '🔻';
     let openRows = '', closedRows = '', pendRows = '', realized = 0, openN = 0, closedN = 0, pendN = 0, liveHdr = '';
     try {
-        // 실시간 평가 (watch_shadow_live 가 쓴 것) 우선, 없으면 진입 데이터만
         let view: any = null;
-        const vp = _tradingStatePath('shadow_view.json');
+        const vp = _tradingStatePath(`shadow_view_${book}.json`);
         if (vp && fs.existsSync(vp)) { try { view = JSON.parse(fs.readFileSync(vp, 'utf-8')); } catch { /* skip */ } }
-        const sp = _tradingStatePath('shadow_state.json');
+        const sp = _tradingStatePath(`shadow_state_${book}.json`);
         const state = (sp && fs.existsSync(sp)) ? JSON.parse(fs.readFileSync(sp, 'utf-8')) : { positions: {} };
 
         const posList = view?.positions || Object.entries<any>(state.positions || {}).map(([symbol, p]: any) => ({ symbol, ...p, value_krw: null }));
@@ -8245,9 +8248,9 @@ function _swingShadowCardHtml(): string {
                 <span>매입금액 ₩${Number(cost).toLocaleString()}</span>
                 <span>손절 ${Number(p.stop).toLocaleString()} · 목표 ${Number(p.target).toLocaleString()}</span></div></div>`;
         }
-        // 청산 내역 (ledger)
+        // 청산 내역 (ledger) — 책별 파일
         if (root) {
-            const tp = path.join(root, 'ledger', 'shadow', 'shadow_trades.jsonl');
+            const tp = path.join(root, 'ledger', 'shadow', `shadow_trades_${book}.jsonl`);
             if (fs.existsSync(tp)) {
                 const exits = fs.readFileSync(tp, 'utf-8').trim().split('\n')
                     .filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } })
@@ -8297,17 +8300,29 @@ function _swingShadowCardHtml(): string {
                 ${cur !== null ? `<span>현재 <b>${Number(cur).toLocaleString()}원</b></span>` : ''}</div></div>`;
         }
     } catch { /* 표시 전용 */ }
-    const pendBlock = pendRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 그날 저가가 지정가에 닿아야 체결 (판정은 마감 후)</div>${pendRows}</div>` : '';
-    const openBlock = openRows || '<div class="empty subtle" style="padding:10px">보유 섀도 없음 (프리마켓 돌면 판정 통과분이 진입됨)</div>';
-    const closedBlock = closedRows ? `<div style="margin-top:12px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산 (손절/목표/기간)</div>${closedRows}</div>` : '';
-    return `<section class="card span-7" id="swingShadowCard">
-    <div class="card-head"><div class="card-title"><span class="title-icon">🌓</span> 스윙팀 섀도 포트폴리오 (페이퍼)</div>
-    <span class="badge">보유 ${openN}${pendN ? ` · 대기 ${pendN}` : ''}</span></div>
-    <div style="font-size:11px;opacity:.6;margin-bottom:6px">주문 0 · 판정자 통과분을 실매매처럼 추적 · 실현손익 <span style="color:${col(realized)}">${sg(realized)}₩${Number(realized).toLocaleString()}</span> (청산 ${closedN}건)</div>
-    ${liveHdr ? `<div style="font-size:11px;opacity:.75;margin-bottom:8px">${liveHdr}</div>` : ''}
+    const pendBlock = pendRows ? `<div style="margin-top:10px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">대기 주문 ${pendN}건 — 그날 저가가 지정가에 닿아야 체결</div>${pendRows}</div>` : '';
+    const empty = book === 'bull'
+        ? '아직 없음 (폭≥50% 강세장에 판정 통과분이 들어옴)'
+        : '아직 없음 (폭<50% 약세장에 판정 통과분이 들어옴)';
+    const openBlock = openRows || `<div class="empty subtle" style="padding:8px;font-size:12px">${empty}</div>`;
+    const closedBlock = closedRows ? `<div style="margin-top:10px"><div style="font-size:11px;opacity:.55;margin-bottom:4px">최근 청산</div>${closedRows}</div>` : '';
+    return `<div style="margin-top:10px;padding:10px;border-radius:10px;background:rgba(128,128,128,.04);border:1px solid rgba(128,128,128,.12)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+      <span style="font-weight:700;font-size:13px">${icon} ${label}</span>
+      <span style="font-size:11px;opacity:.6">보유 ${openN}${pendN ? ` · 대기 ${pendN}` : ''} · 실현 <span style="color:${col(realized)}">${sg(realized)}₩${Number(realized).toLocaleString()}</span> (청산 ${closedN})</span></div>
+    ${liveHdr ? `<div style="font-size:11px;opacity:.75;margin-bottom:6px">${liveHdr}</div>` : ''}
     <div>${openBlock}</div>
     ${pendBlock}
     ${closedBlock}
+  </div>`;
+}
+
+function _swingShadowCardHtml(): string {
+    return `<section class="card span-7" id="swingShadowCard">
+    <div class="card-head"><div class="card-title"><span class="title-icon">🌓</span> 스윙팀 섀도 포트폴리오 (페이퍼)</div></div>
+    <div style="font-size:11px;opacity:.6;margin-bottom:2px">주문 0 · 판정자 통과분을 실매매처럼 추적 · 폭 구간으로 두 권 분리 (강세=상위 모멘텀, 약세=반전 관찰)</div>
+    ${_shadowBookBlock('bull')}
+    ${_shadowBookBlock('bear')}
   </section>`;
 }
 

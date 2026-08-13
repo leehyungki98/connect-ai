@@ -309,9 +309,11 @@ def run_premarket(
             _rank_of = {c.ranked.symbol: i + 1 for i, c in enumerate(candidates)}
             for _e in _sh_entries:
                 _e["rank"] = _rank_of.get(_e["symbol"])
-            # ① 계좌 — 실계좌 제약 그대로 (카드에 보이는 그것)
+            # ① 계좌 — 강세/약세 책으로 나눠 기록 (2026-08-13). 오늘 폭이 어느 구간이냐로
+            #    책이 갈린다: 폭≥50% 강세책, 그 밑 약세책. 성적을 섞지 않는다.
+            _book = shadow.book_for_breadth(breadth)
             shadow.record_entries(_today, _sh_entries, _vol20,
-                                  breadth=breadth, names=_names)
+                                  breadth=breadth, names=_names, book=_book)
             # ② 샘플 — 제약 없이 전부 (폭 구간별 표본을 빨리 쌓으려고)
             shadow.record_samples(_today, _sh_entries, _vol20,
                                   breadth=breadth, names=_names, origin="선정자")
