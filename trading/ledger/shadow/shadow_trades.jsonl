@@ -41,3 +41,6 @@
 {"event": "entry", "date": "2026-08-03", "symbol": "316140", "name": "우리금융지주", "qty": 42, "entry_price": 32717, "limit_price": 33600, "stop": 31429, "target": 36800, "rank": 3, "horizon_days": 15, "breadth": 0.175}
 {"event": "exit", "date": "2026-08-04", "symbol": "005830", "name": "DB손해보험", "reason": "stop", "failure_kind": "손절", "breadth": 0.16, "exit_price": 150740, "entry_date": "2026-07-22", "entry_price": 160481, "qty": 9, "hold_days": 9, "realized_krw": -90532, "ret_pct": -6.07}
 {"event": "exit", "date": "2026-08-04", "symbol": "001450", "name": "현대해상", "reason": "stop", "failure_kind": "1봉손절", "breadth": 0.175, "exit_price": 35359, "entry_date": "2026-08-03", "entry_price": 37869, "qty": 36, "hold_days": 1, "realized_krw": -93048, "ret_pct": -6.63}
+{"event": "order", "date": "2026-08-13", "symbol": "051900", "name": "LG생활건강", "qty": 4, "limit_price": 303500, "stop": 274665, "target": 340000, "rank": 1, "horizon_days": 15, "breadth": 0.84}
+{"event": "order", "date": "2026-08-13", "symbol": "068270", "name": "셀트리온", "qty": 6, "limit_price": 202000, "stop": 190261, "target": 217000, "rank": 2, "horizon_days": 15, "breadth": 0.84}
+{"event": "order", "date": "2026-08-13", "symbol": "001450", "name": "현대해상", "qty": 32, "limit_price": 42950, "stop": 39034, "target": 48000, "rank": 3, "horizon_days": 15, "breadth": 0.84}

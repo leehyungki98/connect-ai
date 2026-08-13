@@ -8358,13 +8358,23 @@ function _swingSelectionCardHtml(): string {
     };
     const today = recs[0];
     const k = kind(today);
-    const b = today ? breadthOf(today) : null;
+    /* 폭은 breadth_log 의 '가장 최근 날짜' 값을 쓴다. 프리마켓이 주문 단계에서 죽거나
+       (장 마감 후 실행 등) 아예 안 돌면 premarket_log 는 옛 날짜에 멈추는데, breadth 는
+       파이프라인 앞단에서 먼저 기록되므로 breadth_log 가 더 최신인 경우가 있다
+       (2026-08-13 실측: premarket 08-11, breadth_log 08-13 84%). 그 최신값을 보여준다. */
+    const brDates = Object.keys(breadthLog).sort();
+    const latestBrDate = brDates.length ? brDates[brDates.length - 1] : null;
+    const b = latestBrDate ? Math.round(breadthLog[latestBrDate] * 100) : (today ? breadthOf(today) : null);
+    /* 폭 날짜와 선정(premarket) 날짜가 다르면 = 오늘 선정이 미완료 — 그걸 티 낸다. */
+    const brStale = latestBrDate && today?.date && latestBrDate !== today.date;
     let statusLine = '프리마켓 미실행 (오늘 08:30 예약)';
-    if (today) {
+    if (b !== null && b >= 50 && brStale) {
+        statusLine = `시장 폭 ${b}% (${esc(latestBrDate)}) · 강세 — 근데 오늘 선정 미완료`;
+    } else if (today) {
         if (today.blocked) statusLine = `전체 차단 · ${esc(today.blocked)}`;
         else if ((today.buys_placed || []).length) statusLine = `진입 ${today.buys_placed.length}종목`;
         else if (b !== null && b < 50) statusLine = `시장 폭 ${b}% &lt; 50% · 신규 진입 차단 (C2)`;
-        else statusLine = '관망 (게이트 통과, 진입 0종목)';
+        else statusLine = `관망 (시장 폭 ${b}%, 진입 0종목)`;
     }
     const buys: string[] = (today?.buys_placed) || [];
     const blocked = (b !== null && b < 50) || !!today?.blocked;
