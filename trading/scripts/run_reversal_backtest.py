@@ -35,16 +35,19 @@ def main() -> int:
     ap.add_argument("--top-n", type=int, default=10)
     args = ap.parse_args()
 
+    import datetime as dt
+
     from run_backtest import export_krx_env, fetch_bars
     from autotrader.screener.universe import fetch_universe
-    import pandas as pd
 
     export_krx_env()
-    end = pd.Timestamp.today().date().isoformat()
-    start = (pd.Timestamp.today() - pd.Timedelta(days=args.days)).date().isoformat()
+    from pykrx import stock
+    # pykrx·유니버스 조회는 YYYYMMDD 형식을 원한다 (원본 run_backtest 와 동일).
+    end = stock.get_nearest_business_day_in_a_week()
+    start = (dt.datetime.strptime(end, "%Y%m%d")
+             - dt.timedelta(days=args.days)).strftime("%Y%m%d")
     print(f"유니버스 조회 (asof {start}) …")
-    universe_syms = [s.symbol if hasattr(s, "symbol") else s
-                     for s in fetch_universe(asof=start)]
+    universe_syms = [s.symbol for s in fetch_universe(asof=start)]
     print(f"  {len(universe_syms)}종목 · 일봉 조회(수 분 소요) …")
     data = fetch_bars(universe_syms, start, end)          # {sym: [Bar,...]}
 
